@@ -7,10 +7,15 @@
 # list stdout: one tab-separated row per worktree, or NONE (exit 0):
 #   repo  name  branch  base  status  ahead  path
 #   status: MERGED | PR_MERGED | EMPTY | NOT_MERGED | DIRTY | UNKNOWN_BASE
+#           DIRTY = uncommitted changes, or a rebase/bisect/merge/cherry-pick/revert in progress
 #           EMPTY = no commits of its own yet (still where it was created): nothing merged, nothing to lose
 #           PR_MERGED = the branch was deleted in origin and a merged pull request had exactly its tip
 #                       as head (squash and rebase merges included): nothing to lose
 #   ahead:  commits of the branch not in base ("-" if unknown)
+#   branch is "(detached)" for a worktree with no branch (worktree-create --detach, e.g. a release): base is
+#   the ref it was checked out from (git config arness-worktree.<name>.base), else a branch or tag at its
+#   HEAD, else "-". It is EMPTY, or NOT_MERGED with ahead = commits on its HEAD that no branch, remote
+#   branch or tag holds (lost on removal). Removing it deletes no branch.
 # remove stdout, per NAME (exit 13 if any SKIPPED):
 #   STOPPED <repo>/<name> <script> <pid>   an npm script npm-run started there, stopped before removing it
 #   REMOVED <path>
@@ -89,16 +94,49 @@ stop_npm_scripts() {
   printf '%s\n' "$out" | grep '^STOPPED ' || true
 }
 
-# Sets S_BASE, S_AHEAD, S_STATUS for a worktree. Args: repo_dir wt_path branch fallback_base
+# Print the ref a detached worktree shows: the one worktree-create recorded, else a branch or tag at its HEAD
+# (remote first: a release is usually origin/<branch>), else "-". Args: repo_dir wt_path name
+detached_base() {
+  local repo_dir="$1" path="$2" name="$3" base pattern
+  base="$(git -C "$repo_dir" config --get "arness-worktree.$name.base" 2>/dev/null || true)"
+  # One pattern at a time: for-each-ref sorts all its matches by refname, whatever the order of the patterns.
+  # Several refs of one kind on HEAD (origin/main and origin/release/1.2) give the first by name: only the
+  # recorded ref is exact.
+  for pattern in refs/remotes refs/heads refs/tags; do
+    if [ -n "$base" ]; then break; fi
+    base="$(git -C "$path" for-each-ref --points-at HEAD --format='%(refname:short)' "$pattern" 2>/dev/null \
+      | grep -v '/HEAD$' | awk 'NR == 1' || true)"
+  done
+  printf '%s\n' "${base:--}"
+}
+
+# True if a rebase, bisect, merge, cherry-pick or revert is in progress in the worktree: removing it loses
+# that state even when no file is changed (a rebase starts on a commit a branch holds). Args: wt_path
+op_in_progress() {
+  local gitdir f
+  gitdir="$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null)" || return 1
+  for f in rebase-merge rebase-apply BISECT_LOG MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD; do
+    if [ -e "$gitdir/$f" ]; then return 0; fi
+  done
+  return 1
+}
+
+# Sets S_BASE, S_AHEAD, S_STATUS for a worktree. Args: repo_dir wt_path branch fallback_base name
 compute_status() {
-  local repo_dir="$1" path="$2" branch="$3" fallback="$4" base=""
+  local repo_dir="$1" path="$2" branch="$3" fallback="$4" name="$5" base=""
   S_BASE="-" S_AHEAD="-" S_STATUS="UNKNOWN_BASE"
   if [ "$branch" != "-" ]; then
     base="$(git -C "$repo_dir" config --get "branch.$branch.arness-base" 2>/dev/null || true)"
   fi
   if [ -z "$base" ]; then base="$fallback"; fi
   if [ -n "$base" ]; then S_BASE="$base"; fi
-  if [ "$branch" != "-" ] && [ -n "$base" ] && git -C "$repo_dir" rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
+  if [ "$branch" = "-" ] && git -C "$path" rev-parse --verify --quiet "HEAD^{commit}" >/dev/null; then
+    # Detached HEAD (worktree-create --detach): no branch to merge. It only loses commits made on it that no
+    # branch, remote branch or tag holds.
+    S_BASE="$(detached_base "$repo_dir" "$path" "$name")"
+    S_AHEAD="$(git -C "$path" rev-list --count HEAD --not --branches --remotes --tags)"
+    if [ "$S_AHEAD" -eq 0 ]; then S_STATUS="EMPTY"; else S_STATUS="NOT_MERGED"; fi
+  elif [ "$branch" != "-" ] && [ -n "$base" ] && git -C "$repo_dir" rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
     # A local base (develop) may be behind its remote: a merge done in origin/develop counts too.
     local refs=("$base")
     case "$base" in
@@ -127,13 +165,13 @@ compute_status() {
         S_STATUS="PR_MERGED"
       fi ;;
   esac
-  # Uncommitted work wins over any other status.
-  if [ -n "$(git -C "$path" status --porcelain 2>/dev/null)" ]; then S_STATUS="DIRTY"; fi
+  # Uncommitted work, or a git operation in progress, wins over any other status.
+  if [ -n "$(git -C "$path" status --porcelain 2>/dev/null)" ] || op_in_progress "$path"; then S_STATUS="DIRTY"; fi
 }
 
 # Print one TSV row per worktree of <repo> that lives in worktrees/<repo>/.
 repo_rows() {
-  local repo="$1" fallback="$2" repo_dir="$SOURCE_DIR/$1" prefix="$WT_DIR/$1/" line path="" branch="-" name
+  local repo="$1" fallback="$2" repo_dir="$SOURCE_DIR/$1" prefix="$WT_DIR/$1/" line path="" branch="-" name shown
   while IFS= read -r line; do
     case "$line" in
       "worktree "*) path="${line#worktree }"; branch="-" ;;
@@ -142,8 +180,10 @@ repo_rows() {
         case "$path" in
           "$prefix"?*)
             name="${path#"$prefix"}"
-            compute_status "$repo_dir" "$path" "$branch" "$fallback"
-            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$repo" "$name" "$branch" "$S_BASE" "$S_STATUS" "$S_AHEAD" "$path"
+            compute_status "$repo_dir" "$path" "$branch" "$fallback" "$name"
+            shown="$branch"
+            if [ "$branch" = "-" ]; then shown="(detached)"; fi
+            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$repo" "$name" "$shown" "$S_BASE" "$S_STATUS" "$S_AHEAD" "$path"
             ;;
         esac
         path="" ;;
@@ -213,7 +253,10 @@ EOF_ROW
     else
       git -C "$repo_dir" worktree remove "$f_path" >&2 || { echo "SKIPPED $f_path git-failed"; skipped=1; continue; }
     fi
-    if [ "$branch" != "-" ]; then
+    if [ "$branch" = "(detached)" ]; then
+      # No branch to delete; drop the base worktree-create --detach recorded for it.
+      git -C "$repo_dir" config --remove-section "arness-worktree.$name" >/dev/null 2>&1 || true
+    elif [ "$branch" != "-" ]; then
       # -d is the safe delete; it can refuse a branch merged into the base but not into HEAD.
       # Merge into the base was verified above, so -D is safe then; with --force the user asked for it.
       # PR_MERGED: the tip is the head of a merged pull request, so -D loses nothing either.

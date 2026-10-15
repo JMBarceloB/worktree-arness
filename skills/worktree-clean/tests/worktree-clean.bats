@@ -609,3 +609,126 @@ mk_npm_state() {
   [[ "$output" == SKIPPED*/worktrees/a/open\ NOT_MERGED ]]
   [ ! -e "$FAKE_NPM_RUN_LOG" ]
 }
+
+# --- detached worktrees (worktree-create --detach) ----------------------------
+
+# mk_detached <repo> <name> <ref> : detached worktree with its ref recorded, like worktree-create --detach.
+mk_detached() {
+  git_q -C "$SRC/$1" worktree add -q --detach "$ARNESS_ROOT/worktrees/$1/$2" "$3"
+  git_q -C "$SRC/$1" config "arness-worktree.$2.base" "$3"
+}
+
+@test "a fresh detached worktree is EMPTY, marked (detached) with the ref it shows as base" {
+  mk_repo a
+  git_q -C "$SRC/a" branch release/1.0
+  mk_detached a release/1.0 release/1.0
+  run "$SCRIPT" list
+  [ "$status" -eq 0 ]
+  [ "$(col release/1.0 3)" = "(detached)" ]
+  [ "$(col release/1.0 4)" = "release/1.0" ]
+  [ "$(col release/1.0 5)" = "EMPTY" ]
+  [ "$(col release/1.0 6)" = "0" ]
+}
+
+@test "the recorded ref is still shown after that branch moves on" {
+  mk_repo a
+  git_q -C "$SRC/a" branch release/1.0
+  mk_detached a release/1.0 release/1.0
+  git_q -C "$SRC/a" checkout -q release/1.0
+  echo 2 > "$SRC/a/g.txt"; git_q -C "$SRC/a" add g.txt; git_q -C "$SRC/a" commit -q -m c2
+  run "$SCRIPT" list
+  [ "$(col release/1.0 4)" = "release/1.0" ]
+  [ "$(col release/1.0 5)" = "EMPTY" ]
+}
+
+@test "without a recorded ref, a detached worktree shows a branch at its HEAD, or -" {
+  mk_repo a
+  git_q -C "$SRC/a" worktree add -q --detach "$ARNESS_ROOT/worktrees/a/at-main" main
+  git_q -C "$SRC/a" worktree add -q --detach "$ARNESS_ROOT/worktrees/a/old" main
+  echo 2 > "$SRC/a/g.txt"; git_q -C "$SRC/a" add g.txt; git_q -C "$SRC/a" commit -q -m c2
+  git_q -C "$ARNESS_ROOT/worktrees/a/at-main" checkout -q --detach main
+  run "$SCRIPT" list
+  [ "$(col at-main 4)" = "main" ]
+  [ "$(col old 4)" = "-" ]
+  [ "$(col old 5)" = "EMPTY" ]
+}
+
+@test "without a recorded ref, a remote branch at HEAD wins over local branches and tags" {
+  ORIGIN="$TMP/origin"
+  git_q init -q "$ORIGIN"
+  echo 1 > "$ORIGIN/f.txt"; git_q -C "$ORIGIN" add f.txt; git_q -C "$ORIGIN" commit -q -m c1
+  git_q -C "$ORIGIN" checkout -q -b release/1.2
+  echo 2 > "$ORIGIN/g.txt"; git_q -C "$ORIGIN" add g.txt; git_q -C "$ORIGIN" commit -q -m c2
+  git_q -C "$ORIGIN" checkout -q main
+  git clone -q "$ORIGIN" "$SRC/a" 2>/dev/null
+  # local branch and tag on the same commit, sorting before origin/release/1.2 by refname
+  git_q -C "$SRC/a" branch aaa origin/release/1.2
+  git_q -C "$SRC/a" tag v1 origin/release/1.2
+  git_q -C "$SRC/a" worktree add -q --detach "$ARNESS_ROOT/worktrees/a/rel" origin/release/1.2
+  run "$SCRIPT" list --no-fetch
+  [ "$(col rel 4)" = "origin/release/1.2" ]
+}
+
+@test "a local branch at HEAD wins over a tag when no remote branch is there" {
+  mk_repo a
+  git_q -C "$SRC/a" tag aaa
+  git_q -C "$SRC/a" worktree add -q --detach "$ARNESS_ROOT/worktrees/a/d" main
+  run "$SCRIPT" list
+  [ "$(col d 4)" = "main" ]
+}
+
+@test "a rebase in progress with a clean tree is DIRTY, not EMPTY, and remove needs --force" {
+  mk_repo a
+  mk_wt a w commit
+  echo 2 > "$SRC/a/g.txt"; git_q -C "$SRC/a" add g.txt; git_q -C "$SRC/a" commit -q -m c2
+  # stops after replaying the first commit: tree clean, HEAD detached, rebase state on disk
+  GIT_SEQUENCE_EDITOR=true git_q -C "$ARNESS_ROOT/worktrees/a/w" rebase -q -x false main >/dev/null 2>&1 || true
+  [ -z "$(git -C "$ARNESS_ROOT/worktrees/a/w" status --porcelain)" ]
+  run "$SCRIPT" list
+  [ "$(col w 5)" = "DIRTY" ]
+  run "$SCRIPT" remove --source a w
+  [ "$status" -eq 13 ]
+  [ -d "$ARNESS_ROOT/worktrees/a/w" ]
+}
+
+@test "a bisect in progress in a detached worktree is DIRTY" {
+  mk_repo a
+  mk_detached a d main
+  git_q -C "$ARNESS_ROOT/worktrees/a/d" bisect start >/dev/null
+  run "$SCRIPT" list
+  [ "$(col d 5)" = "DIRTY" ]
+}
+
+@test "remove deletes a detached EMPTY worktree without --force, keeps every branch and drops its record" {
+  mk_repo a
+  git_q -C "$SRC/a" branch release/1.0
+  mk_detached a release/1.0 release/1.0
+  run "$SCRIPT" remove --source a release/1.0
+  [ "$status" -eq 0 ]
+  [ "$output" = "REMOVED $ARNESS_ROOT/worktrees/a/release/1.0" ]
+  [ ! -e "$ARNESS_ROOT/worktrees/a/release" ]
+  [ "$(git -C "$SRC/a" branch --format='%(refname:short)' | tr '\n' ' ')" = "main release/1.0 " ]
+  [ -z "$(git -C "$SRC/a" config --get-regexp '^arness-worktree\.' || true)" ]
+}
+
+@test "commits made on a detached HEAD make it NOT_MERGED and remove needs --force" {
+  mk_repo a
+  git_q -C "$SRC/a" worktree add -q --detach "$ARNESS_ROOT/worktrees/a/d" main
+  echo x > "$ARNESS_ROOT/worktrees/a/d/x.txt"
+  git_q -C "$ARNESS_ROOT/worktrees/a/d" add x.txt
+  git_q -C "$ARNESS_ROOT/worktrees/a/d" commit -q -m work
+  run "$SCRIPT" list
+  [ "$(col d 5)" = "NOT_MERGED" ]
+  [ "$(col d 6)" = "1" ]
+  run "$SCRIPT" remove --source a d
+  [ "$status" -eq 13 ]
+  [ -d "$ARNESS_ROOT/worktrees/a/d" ]
+}
+
+@test "a detached worktree with uncommitted changes is DIRTY" {
+  mk_repo a
+  git_q -C "$SRC/a" worktree add -q --detach "$ARNESS_ROOT/worktrees/a/d" main
+  echo y > "$ARNESS_ROOT/worktrees/a/d/untracked.txt"
+  run "$SCRIPT" list
+  [ "$(col d 5)" = "DIRTY" ]
+}
