@@ -205,6 +205,50 @@ teardown() { rm -rf "$TMP"; }
   [ -d "$ARNESS_ROOT/worktrees/a/feat/y" ]
 }
 
+# fake_git_remove <mode>: wrap git so `worktree remove` fails like Git for Windows ("Directory not empty").
+#   left-behind: git does unregister the worktree, but a file stays in its dir
+#   still-listed: git does nothing, the worktree stays registered
+fake_git_remove() {
+  local real_git
+  real_git="$(command -v git)"
+  cat > "$TMP/bin/git" <<EOF
+#!/usr/bin/env bash
+for a in "\$@"; do
+  [ "\$a" = remove ] || continue
+  p="\${!#}"
+  if [ "$1" = left-behind ]; then "$real_git" "\$@" >/dev/null 2>&1; mkdir -p "\$p/node_modules/x"; echo y > "\$p/node_modules/x/f"; fi
+  echo "error: failed to delete '\$p': Directory not empty" >&2
+  exit 1
+done
+exec "$real_git" "\$@"
+EOF
+  chmod +x "$TMP/bin/git"
+}
+
+@test "remove finishes deleting a dir that git unregistered but left behind" {
+  mk_repo a
+  mk_wt a feat/x
+  fake_git_remove left-behind
+  run "$SCRIPT" remove --source a feat/x
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"note: git left "*"/worktrees/a/feat/x behind"* ]]
+  [[ "$output" == *REMOVED*/worktrees/a/feat/x ]]
+  [ ! -e "$ARNESS_ROOT/worktrees/a/feat" ]
+  [ -d "$ARNESS_ROOT/worktrees/a" ]
+  [ -z "$(git -C "$SRC/a" branch --list feat/x)" ]
+}
+
+@test "remove never deletes by hand a worktree that git still lists" {
+  mk_repo a
+  mk_wt a feat/x
+  fake_git_remove still-listed
+  run "$SCRIPT" remove --source a feat/x
+  [ "$status" -eq 13 ]
+  [[ "$output" == *SKIPPED*/worktrees/a/feat/x\ git-failed ]]
+  [ -f "$ARNESS_ROOT/worktrees/a/feat/x/f.txt" ]
+  [ -n "$(git -C "$SRC/a" branch --list feat/x)" ]
+}
+
 @test "remove several names at once" {
   mk_repo a
   mk_wt a one

@@ -41,6 +41,7 @@ All logic is in `scripts/worktree-clean.sh` (in this skill's folder). Do not run
    ```
    Before removing each worktree, `remove` stops the npm scripts the `npm-run` skill started in it (dev servers, watchers): once the folder is gone they would keep running and holding their ports. Scripts started by hand, outside `npm-run`, are not seen.
 6. Report each `STOPPED <repo>/<name> <script> <pid>`, each `REMOVED <path>` and each `SKIPPED <path> <reason>` (exit 13 means at least one skipped). `stop-failed`: its npm scripts could not be stopped, so the worktree was kept; show the `warning:` from stderr.
+   - A `note: git left <path> behind; deleting it` on stderr is not a failure: git unregistered the worktree but could not empty its dir (seen on Windows with big `node_modules`), and the script deleted the rest. Never finish such a dir by hand: rerun `remove`, or report it.
 
 ## Rules
 
