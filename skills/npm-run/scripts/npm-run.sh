@@ -87,6 +87,8 @@ list_worktrees() {
     [ -e "$repo_dir/.git" ] || continue
     repo="$(basename "$repo_dir")"
     prefix="$ROOT/worktrees/$repo/"
+    # Git for Windows lists worktrees as C:/Users/..., while the shell gives /c/Users/...
+    if command -v cygpath >/dev/null 2>&1; then prefix="$(cygpath -m "$prefix")"; fi
     while IFS= read -r line; do
       case "$line" in
         "worktree $prefix"?*)
@@ -148,8 +150,17 @@ print_scripts() {
 pid_alive() {
   case "$1" in ""|*[!0-9]*) return 1 ;; esac
   kill -0 "$1" 2>/dev/null || return 1
-  case "$(ps -p "$1" -o args= 2>/dev/null)" in *npm*) return 0 ;; esac
+  case "$(proc_args "$1")" in *npm*) return 0 ;; esac
   return 1
+}
+
+# proc_args <pid>: its command line. /proc first: the ps of Git Bash (Windows) has no -o.
+proc_args() {
+  if [ -r "/proc/$1/cmdline" ]; then
+    tr '\0' ' ' < "/proc/$1/cmdline"
+  else
+    ps -p "$1" -o args= 2>/dev/null
+  fi
 }
 
 install_deps() {
@@ -300,6 +311,10 @@ forget() {
 # stop_pid <pid>: TERM to its process group, then KILL after 5 s.
 stop_pid() {
   local pid="$1"
+  # Git Bash (Windows): signals do not reach the native node processes under npm; end the tree.
+  if [ -r "/proc/$pid/winpid" ] && command -v taskkill >/dev/null 2>&1; then
+    taskkill //T //F //PID "$(cat "/proc/$pid/winpid")" >/dev/null 2>&1 || true
+  fi
   kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
   for _ in $(seq 50); do
     kill -0 "$pid" 2>/dev/null || return 0
