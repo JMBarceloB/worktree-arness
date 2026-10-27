@@ -432,6 +432,32 @@ JSON
   [[ "$output" == "FINISHED a/feat/x ver 0 "* ]]
 }
 
+@test ".nvmrc: without nvm, a current node that does not match runs with a warning" {
+  nvmrc_setup
+  echo 99.1 > "$(WT a/feat/x)/.nvmrc"
+  run "$SCRIPT" run ver
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"warning: .nvmrc asks for node 99.1 and there is no nvm; using the current node "[0-9]* ]]
+  [[ "$output" == *"FINISHED a/feat/x ver 0 "* ]]
+  [[ "$output" != *NODE\ a/feat/x* ]]
+  rm -f "$(state a/feat/x)/ver.log"
+  # An nvm-windows install counts as nvm, even when its folder has no versions.
+  export NVM_HOME="$TMP/nvm-windows-empty"
+  mkdir -p "$NVM_HOME"
+  run "$SCRIPT" run ver
+  [ "$status" -eq 13 ]
+  [[ "$output" == *"NO_NODE_VERSION a/feat/x 99.1" ]]
+  [ ! -e "$(state a/feat/x)/ver.log" ]
+  # So does a fresh nvm with no version installed yet.
+  unset NVM_HOME
+  export NVM_DIR="$TMP/nvm-fresh"
+  mkdir -p "$NVM_DIR"
+  touch "$NVM_DIR/nvm.sh"
+  run "$SCRIPT" run ver
+  [ "$status" -eq 13 ]
+  [ "$output" = "NO_NODE_VERSION a/feat/x 99.1" ]
+}
+
 @test ".nvmrc: an alias is not resolved; a note, and the current node runs" {
   nvmrc_setup
   echo 'lts/*' > "$(WT a/feat/x)/.nvmrc"

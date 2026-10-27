@@ -15,7 +15,7 @@
 # Without node_modules it stops with CONFIRM_INSTALL; --install runs `npm ci` (with package-lock.json)
 # or `npm install` first. Logs and pids: <arness>/tmp/npm-run/<repo>/<name>/<script>.{log,pid}.
 # With an .nvmrc at the worktree root, install and run use that node version from nvm (NVM_DIR) or
-# nvm-windows (NVM_HOME), first in PATH for them only; 22 picks the highest 22.x installed.
+# nvm-windows (NVM_HOME), first in PATH for them only; 22 picks the highest 22.x installed. No nvm: a warning.
 # stop removes the pid and log of what it stops, and the install.log and folders left empty. A script
 # that ended by itself (FINISHED, EXITED) keeps its log until clean removes everything that no longer runs.
 #
@@ -40,7 +40,7 @@
 #   UNKNOWN_SCRIPT <repo>/<name> <script>          not in package.json "scripts" (exit 7)
 #   CONFIRM_INSTALL <repo>/<name>                  no node_modules: ask, then rerun with --install (exit 11)
 #   INSTALL_FAILED <code> <log>                    npm ci / install failed; last 20 lines on stderr (exit 12)
-#   NO_NODE_VERSION <repo>/<name> <version>        .nvmrc version neither in nvm nor current (exit 13)
+#   NO_NODE_VERSION <repo>/<name> <version>        .nvmrc version neither in nvm nor current (exit 13); no nvm: a warning
 #   ALREADY_RUNNING <repo>/<name> <script> <pid>   that script already runs there (exit 9)
 #   NO_NPM                                         npm not found (exit 3)
 # Exit codes: 0 ok, 2 invalid usage, 3 no npm, 4 no worktree, 5 no command, 6 package.json,
@@ -196,10 +196,10 @@ node_dir() {
 
 # use_nvmrc: when the worktree has an .nvmrc, put that node version first in PATH for install and the
 # script (the global node is left alone) and set NODE_LINE to "NODE <slug> <version>"; stops with
-# NO_NODE_VERSION when neither nvm nor the current node has it. An alias or range (lts/*, node, 22.x)
-# is not resolved: a note on stderr, and the current node runs.
+# NO_NODE_VERSION when neither nvm nor the current node has it. Without nvm, or with an alias or range
+# (lts/*, node, 22.x), which is not resolved: a warning or note on stderr, and the current node runs.
 use_nvmrc() {
-  local file="$WT/.nvmrc" want found have home bom=$'\xef\xbb\xbf' tab=$'\t'
+  local file="$WT/.nvmrc" want found have home nvm bom=$'\xef\xbb\xbf' tab=$'\t'
   NODE_LINE=""
   [ -f "$file" ] || return 0
   # First non-empty line, without a UTF-8 BOM, a # comment, blanks or CR (Windows editors write them).
@@ -225,6 +225,12 @@ use_nvmrc() {
   have="$(node --version 2>/dev/null)" || have=""
   have="${have#v}"
   case "$have" in "$want"|"$want".*) return 0 ;; esac
+  # Without nvm (node from a package manager, fnm, volta...) there is nothing to switch to or install with.
+  nvm="${NVM_DIR:-$HOME/.nvm}"
+  if [ -z "${NVM_HOME:-}" ] && [ ! -e "$nvm/nvm.sh" ] && [ ! -d "$nvm/versions/node" ]; then
+    echo "warning: .nvmrc asks for node $want and there is no nvm; using the current node ${have:-(none)}" >&2
+    return 0
+  fi
   echo "NO_NODE_VERSION $SLUG $want"
   exit "$EXIT_NODE_VERSION"
 }

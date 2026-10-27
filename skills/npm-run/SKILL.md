@@ -10,7 +10,7 @@ allowed-tools: Bash(skills/npm-run/scripts/npm-run.sh *)
 
 Runs `npm run <script> [-- <args>]` in `worktrees/<repo>/<name>`, in the background, with its output in a log and its pid saved, so it can be stopped later (with its child processes).
 All checks are done by `scripts/npm-run.sh` (in this skill's folder): the worktree exists, `package.json` is at its root, the script is a key of its `"scripts"`, and `node_modules` is there. Only npm; only the `package.json` at the worktree root.
-With an `.nvmrc` at the worktree root, the install and the script run with that node version from nvm (`NVM_DIR`) or nvm-windows (`NVM_HOME`). It goes first in their PATH only, so the global node is left alone; `22` picks the highest `22.x` installed. An alias or range (`lts/*`, `node`, `22.x`) is not resolved: a `note:` on stderr, and the current node runs; relay it.
+With an `.nvmrc` at the worktree root, the install and the script run with that node version from nvm (`NVM_DIR`) or nvm-windows (`NVM_HOME`). It goes first in their PATH only, so the global node is left alone; `22` picks the highest `22.x` installed. An alias or range (`lts/*`, `node`, `22.x`) is not resolved: a `note:` on stderr, and the current node runs; relay it. Without nvm or nvm-windows installed (node from a package manager, fnm, volta), a version the current node does not match gives a `warning:` on stderr and the current node runs; relay it too.
 
 ## Procedure
 
@@ -35,7 +35,7 @@ With an `.nvmrc` at the worktree root, the install and the script run with that 
 | `NO_PACKAGE_JSON <path>` / `INVALID_PACKAGE_JSON <path>` | 6 | **Finish with NO_PACKAGE_JSON** (or INVALID_PACKAGE_JSON). |
 | `CONFIRM_INSTALL <slug>` | 11 | No `node_modules`. Ask: install the dependencies? Yes: rerun with `--install` (runs `npm ci`, or `npm install` without a lock file; it may take minutes, use a long timeout). No: finish. |
 | `NODE <slug> <version>` | — | The `.nvmrc` node is used; comes before `INSTALLED`/`STARTED`/`FINISHED`. Report it. |
-| `NO_NODE_VERSION <slug> <version>` | 13 | The `.nvmrc` version is neither in nvm nor the current node. Nothing ran. Suggest `nvm install <version>`; do not run it with another node. |
+| `NO_NODE_VERSION <slug> <version>` | 13 | nvm is installed, but neither it nor the current node has the `.nvmrc` version. Nothing ran. Suggest `nvm install <version>`; do not run it with another node. |
 | `INSTALLED <slug> <log>` | — | Comes before `STARTED`/`FINISHED`; report it. |
 | `INSTALL_FAILED <code> <log>` | 12 | Show the stderr lines. Do not retry. |
 | `ALREADY_RUNNING <slug> <script> <pid>` | 9 | Tell the user. Offer to stop it first; never start a second one. |
