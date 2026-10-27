@@ -133,7 +133,9 @@ main() {
   WT="$root/worktrees/$repo/$name"
   # Git for Windows lists worktrees as C:/Users/..., while the shell gives /c/Users/...
   local listed="$WT"
-  if command -v cygpath >/dev/null 2>&1; then listed="$(cygpath -m "$WT")"; fi
+  if command -v cygpath >/dev/null 2>&1; then
+    listed="$(cygpath -m "$WT")" || die "cygpath cannot convert $WT"
+  fi
 
   # It must be a real worktree of source/<repo>, not just a folder.
   if [ -L "$WT" ] || [ ! -e "$root/source/$repo/.git" ] ||
