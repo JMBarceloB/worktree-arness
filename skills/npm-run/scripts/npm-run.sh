@@ -88,7 +88,7 @@ list_worktrees() {
     repo="$(basename "$repo_dir")"
     prefix="$ROOT/worktrees/$repo/"
     # Git for Windows lists worktrees as C:/Users/..., while the shell gives /c/Users/...
-    if command -v cygpath >/dev/null 2>&1; then prefix="$(cygpath -m "$prefix")"; fi
+    if command -v cygpath >/dev/null 2>&1; then prefix="$(cygpath -m "$prefix")" || continue; fi
     while IFS= read -r line; do
       case "$line" in
         "worktree $prefix"?*)
@@ -157,7 +157,7 @@ pid_alive() {
 # proc_args <pid>: its command line. /proc first: the ps of Git Bash (Windows) has no -o.
 proc_args() {
   if [ -r "/proc/$1/cmdline" ]; then
-    tr '\0' ' ' < "/proc/$1/cmdline"
+    tr '\0' ' ' 2>/dev/null < "/proc/$1/cmdline"
   else
     ps -p "$1" -o args= 2>/dev/null
   fi
@@ -312,6 +312,7 @@ forget() {
 stop_pid() {
   local pid="$1"
   # Git Bash (Windows): signals do not reach the native node processes under npm; end the tree.
+  # (With MSYS_NO_PATHCONV=1 the //T //F flags are not converted and taskkill fails; TERM/KILL below still run.)
   if [ -r "/proc/$pid/winpid" ] && command -v taskkill >/dev/null 2>&1; then
     taskkill //T //F //PID "$(cat "/proc/$pid/winpid")" >/dev/null 2>&1 || true
   fi

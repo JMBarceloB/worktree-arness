@@ -23,9 +23,11 @@
 #   STOPPED <repo>/<name> <script> <pid>   an npm script npm-run started there, stopped before removing it
 #   REMOVED <path>
 #   SKIPPED <path|name> <reason>   reason: invalid-name | not-a-worktree | git-failed | stop-failed |
-#                                  NOT_MERGED | DIRTY | UNKNOWN_BASE (these three need --force)
+#                                  rm-failed | NOT_MERGED | DIRTY | UNKNOWN_BASE (these three need --force)
 #   If git unregisters a worktree but leaves part of its dir (Git for Windows: "Directory not empty"),
 #   the rest is deleted with rm -rf and a note goes to stderr. A worktree git still lists is skipped.
+#   rm-failed: git let the worktree go and its branch is deleted, but part of the dir is still in use;
+#   it is no longer a worktree, so the user can delete it once whatever holds it is closed.
 # Before a worktree is removed, the npm scripts npm-run started in it (dev servers, watchers) are stopped
 # with `npm-run.sh stop --worktree <repo>/<name>`: once its folder is gone they would keep running and
 # holding their ports. If that stop fails the worktree is kept (stop-failed).
@@ -198,7 +200,8 @@ compute_status() {
 repo_rows() {
   local repo="$1" fallback="$2" repo_dir="$SOURCE_DIR/$1" prefix="$WT_DIR/$1/" line path="" branch="-" name shown
   # Git for Windows lists worktrees as C:/Users/..., while the shell gives /c/Users/...
-  if command -v cygpath >/dev/null 2>&1; then prefix="$(cygpath -m "$prefix")"; fi
+  # An empty prefix would match every worktree of the repo: list none instead.
+  if command -v cygpath >/dev/null 2>&1; then prefix="$(cygpath -m "$prefix")" || return 0; fi
   while IFS= read -r line; do
     case "$line" in
       "worktree "*) path="${line#worktree }"; branch="-" ;;
@@ -258,6 +261,7 @@ cmd_list() {
 # Remove a worktree with git, then delete what git left of its dir. On a big node_modules Git for Windows can
 # unregister the worktree and stop with "Directory not empty"; rm -rf (MSYS too, long paths included) ends it.
 # A worktree git still lists is never deleted by hand. Args: repo_dir path
+# Returns 0 removed, 1 git kept it (git-failed), 2 git let it go but rm -rf could not finish (rm-failed).
 remove_worktree() {
   local repo_dir="$1" path="$2" force=() listed
   [ -n "$path" ] || return 1
@@ -268,12 +272,12 @@ remove_worktree() {
   listed="$(git -C "$repo_dir" worktree list --porcelain)" || return 1
   if printf '%s\n' "$listed" | grep -qxF "worktree $path"; then return 1; fi
   echo "note: git left $path behind; deleting it" >&2
-  rm -rf "$path"
+  rm -rf "$path" || return 2
 }
 
 cmd_remove() {
   local repo="${SEL_REPOS[0]}" repo_dir name path row skipped=0 stop d
-  local branch status f_path
+  local branch status f_path rc
   [ "${#NAMES[@]}" -gt 0 ] || die "remove needs at least one NAME"
   stop="$WT_DIR/$repo"
   # Same form as the C:/... paths git gives, or the empty-dir cleanup below never meets it and climbs past it.
@@ -294,7 +298,9 @@ EOF_ROW
     esac
     stop_npm_scripts "$repo/$name" || { echo "SKIPPED $f_path stop-failed"; skipped=1; continue; }
 
-    if ! remove_worktree "$repo_dir" "$f_path"; then echo "SKIPPED $f_path git-failed"; skipped=1; continue; fi
+    rc=0
+    remove_worktree "$repo_dir" "$f_path" || rc=$?
+    if [ "$rc" -eq 1 ]; then echo "SKIPPED $f_path git-failed"; skipped=1; continue; fi
     if [ "$branch" = "(detached)" ]; then
       # No branch to delete; drop the base worktree-create --detach recorded for it.
       git -C "$repo_dir" config --remove-section "arness-worktree.$name" >/dev/null 2>&1 || true
@@ -314,6 +320,8 @@ EOF_ROW
       fi
     fi
     git -C "$repo_dir" worktree prune >&2
+    # Git let it go and its branch is gone; only the dir is left, still held by something.
+    if [ "$rc" -eq 2 ]; then echo "SKIPPED $f_path rm-failed"; skipped=1; continue; fi
     # Drop now-empty parent dirs (feat/), never worktrees/<repo> itself.
     d="$(dirname "$f_path")"
     while [ "$d" != "$stop" ] && rmdir "$d" 2>/dev/null; do d="$(dirname "$d")"; done

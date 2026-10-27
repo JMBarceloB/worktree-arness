@@ -263,6 +263,34 @@ EOF
   [ -f "$ARNESS_ROOT/worktrees/a/feat/x/f.txt" ]
 }
 
+# fake_rm_fails: rm fails for any path under worktrees/, like a file held open on Windows.
+fake_rm_fails() {
+  local real_rm
+  real_rm="$(command -v rm)"
+  cat > "$TMP/bin/rm" <<EOF
+#!/usr/bin/env bash
+for a in "\$@"; do
+  case "\$a" in */worktrees/*) echo "rm: cannot remove '\$a': Device or resource busy" >&2; exit 1 ;; esac
+done
+exec "$real_rm" "\$@"
+EOF
+  chmod +x "$TMP/bin/rm"
+}
+
+@test "remove reports rm-failed and still drops the branch when the left-behind dir is held" {
+  mk_repo a
+  mk_wt a feat/x
+  fake_git_remove left-behind
+  fake_rm_fails
+  run "$SCRIPT" remove --source a feat/x
+  [ "$status" -eq 13 ]
+  [[ "$output" == *SKIPPED*/worktrees/a/feat/x\ rm-failed ]]
+  [[ "$output" != *REMOVED* ]]
+  [ -d "$ARNESS_ROOT/worktrees/a/feat/x" ]
+  [ -z "$(git -C "$SRC/a" branch --list feat/x)" ]
+  [ -z "$(git -C "$SRC/a" worktree list --porcelain | grep "/worktrees/a/feat/x$")" ]
+}
+
 @test "remove several names at once" {
   mk_repo a
   mk_wt a one
