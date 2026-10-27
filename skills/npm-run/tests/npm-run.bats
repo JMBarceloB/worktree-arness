@@ -38,6 +38,16 @@ EOF
 WT() { echo "$ARNESS_ROOT/worktrees/$1"; }
 state() { echo "$ARNESS_ROOT/tmp/npm-run/$1"; }
 
+# group_pids <pgid>: the processes in that process group. Git Bash has no pgrep, but its ps prints the
+# PGID as the third column.
+group_pids() {
+  if command -v pgrep >/dev/null 2>&1; then
+    pgrep -g "$1" || true
+  else
+    ps | awk -v g="$1" 'NR > 1 && $3 == g { print $1 }'
+  fi
+}
+
 setup() {
   command -v npm >/dev/null 2>&1 || skip "npm not installed"
   TMP="$(mktemp -d)"
@@ -204,13 +214,13 @@ teardown() {
   "$SCRIPT" run serve >/dev/null
   pid="$(cat "$(state a/feat/x)/serve.pid")"
   sleep 0.5
-  [ -n "$(pgrep -g "$pid" || true)" ]
+  [ -n "$(group_pids "$pid")" ]
 
   run "$SCRIPT" stop --worktree a/feat/x serve
   [ "$status" -eq 0 ]
   [ "$output" = "STOPPED a/feat/x serve $pid" ]
   sleep 0.3
-  [ -z "$(pgrep -g "$pid" || true)" ]
+  [ -z "$(group_pids "$pid")" ]
   [ ! -e "$(state a/feat/x)/serve.pid" ]
 
   run "$SCRIPT" ps
