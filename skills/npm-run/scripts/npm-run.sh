@@ -14,12 +14,15 @@
 # process group, so stop also ends its children (dev servers, watchers).
 # Without node_modules it stops with CONFIRM_INSTALL; --install runs `npm ci` (with package-lock.json)
 # or `npm install` first. Logs and pids: <arness>/tmp/npm-run/<repo>/<name>/<script>.{log,pid}.
+# With an .nvmrc at the worktree root, install and run use that node version from nvm (NVM_DIR) or
+# nvm-windows (NVM_HOME), first in PATH for them only; 22 picks the highest 22.x installed.
 # stop removes the pid and log of what it stops, and the install.log and folders left empty. A script
 # that ended by itself (FINISHED, EXITED) keeps its log until clean removes everything that no longer runs.
 #
 # Stdout, first word is the status:
 #   STARTED <repo>/<name> <script> <pid> <log>     running in the background
 #   FINISHED <repo>/<name> <script> <code> <log>   ended within the first second (exit 0 only if code 0); NPM_RUN_QUICK_TENTHS changes it
+#   NODE <repo>/<name> <version>                   node of the .nvmrc used (before INSTALLED / STARTED / FINISHED)
 #   INSTALLED <repo>/<name> <log>                  dependencies installed (before STARTED)
 #   SCRIPT <name>                                  one per available script (scripts, NO_COMMAND,
 #                                                  UNKNOWN_SCRIPT)
@@ -37,17 +40,23 @@
 #   UNKNOWN_SCRIPT <repo>/<name> <script>          not in package.json "scripts" (exit 7)
 #   CONFIRM_INSTALL <repo>/<name>                  no node_modules: ask, then rerun with --install (exit 11)
 #   INSTALL_FAILED <code> <log>                    npm ci / install failed; last 20 lines on stderr (exit 12)
+#   NO_NODE_VERSION <repo>/<name> <version>        .nvmrc version neither in nvm nor current (exit 13)
 #   ALREADY_RUNNING <repo>/<name> <script> <pid>   that script already runs there (exit 9)
 #   NO_NPM                                         npm not found (exit 3)
 # Exit codes: 0 ok, 2 invalid usage, 3 no npm, 4 no worktree, 5 no command, 6 package.json,
 # 7 unknown script, 8 script failed at start, 9 already running, 10 choose worktree,
-# 11 confirm install, 12 install failed.
+# 11 confirm install, 12 install failed, 13 node version of .nvmrc not installed.
 set -euo pipefail
 
 EXIT_USAGE=2 EXIT_NO_NPM=3 EXIT_NO_WORKTREE=4 EXIT_NO_COMMAND=5 EXIT_PACKAGE=6 EXIT_UNKNOWN_SCRIPT=7
 EXIT_FAILED=8 EXIT_RUNNING=9 EXIT_CHOOSE=10 EXIT_CONFIRM_INSTALL=11 EXIT_INSTALL=12
+EXIT_NODE_VERSION=13
 
 die() { echo "error: $*" >&2; exit "$EXIT_USAGE"; }
+
+need_npm() {
+  if ! command -v npm >/dev/null 2>&1; then echo "NO_NPM"; exit "$EXIT_NO_NPM"; fi
+}
 
 resolve_root() {
   if [ -n "${ARNESS_ROOT:-}" ]; then
@@ -165,6 +174,61 @@ install_deps() {
   echo "INSTALLED $SLUG $log"
 }
 
+# node_dir <version>: "<version><TAB><folder>" of the highest installed node that is <version> or starts with
+# <version> (22 matches 22.17.1, not 2). Looks in nvm (NVM_DIR, default ~/.nvm: <dir>/versions/node/v<x>/bin)
+# and nvm-windows (NVM_HOME: <dir>/v<x>; a different `root:` in its settings.txt is not read). Fails when
+# no installed version matches.
+node_dir() {
+  local want="$1" base d v
+  {
+    for base in "${NVM_DIR:-$HOME/.nvm}/versions/node" "${NVM_HOME:-}"; do
+      [ -n "$base" ] || continue
+      if command -v cygpath >/dev/null 2>&1; then base="$(cygpath -u "$base")" || continue; fi
+      for d in "$base"/v*; do
+        v="${d##*/v}"
+        case "$v" in "$want"|"$want".*) ;; *) continue ;; esac
+        if [ -d "$d/bin" ]; then d="$d/bin"; fi
+        if [ -x "$d/node" ] || [ -x "$d/node.exe" ]; then printf '%s\t%s\n' "$v" "$d"; fi
+      done
+    done
+  } | LC_ALL=C sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1 | grep .
+}
+
+# use_nvmrc: when the worktree has an .nvmrc, put that node version first in PATH for install and the
+# script (the global node is left alone) and set NODE_LINE to "NODE <slug> <version>"; stops with
+# NO_NODE_VERSION when neither nvm nor the current node has it. An alias or range (lts/*, node, 22.x)
+# is not resolved: a note on stderr, and the current node runs.
+use_nvmrc() {
+  local file="$WT/.nvmrc" want found have home bom=$'\xef\xbb\xbf' tab=$'\t'
+  NODE_LINE=""
+  [ -f "$file" ] || return 0
+  # First non-empty line, without a UTF-8 BOM, a # comment, blanks or CR (Windows editors write them).
+  want="$(LC_ALL=C sed -e "s/^$bom//" -e 's/#.*//' "$file" | tr -d ' \t\r' | awk 'NF { print; exit }')"
+  want="${want#v}"
+  case "$want" in
+    ""|.*|*.|*..*|*[!0-9.]*)
+      echo "note: .nvmrc says '$want', not a version number; using the current node" >&2
+      return 0 ;;
+  esac
+  if found="$(node_dir "$want")"; then
+    PATH="${found#*"$tab"}:$PATH"
+    NODE_LINE="NODE $SLUG ${found%%"$tab"*}"
+    return 0
+  fi
+  if [ -n "${NVM_HOME:-}" ]; then
+    home="$NVM_HOME"
+    if command -v cygpath >/dev/null 2>&1; then home="$(cygpath -u "$home")" || home="$NVM_HOME"; fi
+    if ! ls -d "$home"/v* >/dev/null 2>&1; then
+      echo "note: NVM_HOME ($NVM_HOME) has no node versions; nvm-windows may keep them under the root: of its settings.txt" >&2
+    fi
+  fi
+  have="$(node --version 2>/dev/null)" || have=""
+  have="${have#v}"
+  case "$have" in "$want"|"$want".*) return 0 ;; esac
+  echo "NO_NODE_VERSION $SLUG $want"
+  exit "$EXIT_NODE_VERSION"
+}
+
 cmd_run() {
   local want="" install=0 script="" args=()
   while [ $# -gt 0 ]; do
@@ -178,6 +242,10 @@ cmd_run() {
   done
 
   resolve_worktree "$want"
+  # The .nvmrc node first: npm may only be reachable through nvm, and a missing version must not cost
+  # an install question.
+  use_nvmrc
+  need_npm
   read_scripts
   if [ -z "$script" ]; then
     echo "NO_COMMAND $SLUG"
@@ -201,7 +269,10 @@ cmd_run() {
       echo "CONFIRM_INSTALL $SLUG"
       exit "$EXIT_CONFIRM_INSTALL"
     fi
+    [ -z "$NODE_LINE" ] || echo "$NODE_LINE"
     install_deps
+  elif [ -n "$NODE_LINE" ]; then
+    echo "$NODE_LINE"
   fi
 
   mkdir -p "$STATE"
@@ -388,11 +459,12 @@ main() {
   local cmd="$1"
   shift
   case "$cmd" in
-    -h|--help) sed -n '2,44p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) sed -n '2,48p' "${BASH_SOURCE[0]}"; exit 0 ;;
     run|scripts|ps|stop|clean) ;;
     *) die "unknown command: $cmd" ;;
   esac
-  if ! command -v npm >/dev/null 2>&1; then echo "NO_NPM"; exit "$EXIT_NO_NPM"; fi
+  # Only run and scripts call npm; run checks it itself, after putting the .nvmrc node first in PATH.
+  [ "$cmd" != scripts ] || need_npm
   command -v git >/dev/null 2>&1 || die "git not found"
   ROOT="$(resolve_root)"
   ROOT="$(cd -P "$ROOT" && pwd -P)"   # git reports physical paths
