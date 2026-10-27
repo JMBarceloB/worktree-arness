@@ -281,7 +281,9 @@ cmd_remove() {
   [ "${#NAMES[@]}" -gt 0 ] || die "remove needs at least one NAME"
   stop="$WT_DIR/$repo"
   # Same form as the C:/... paths git gives, or the empty-dir cleanup below never meets it and climbs past it.
-  if command -v cygpath >/dev/null 2>&1; then stop="$(cygpath -m "$stop")"; fi
+  if command -v cygpath >/dev/null 2>&1; then
+    stop="$(cygpath -m "$stop")" || die "cygpath cannot convert $stop"
+  fi
   repo_dir="$SOURCE_DIR/$repo"
 
   for name in "${NAMES[@]}"; do
