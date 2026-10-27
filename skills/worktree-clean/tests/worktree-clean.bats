@@ -790,6 +790,19 @@ mk_detached() {
   [ "$(git -C "$SRC/a" rev-parse origin/epic/X-1)" = "$(git -C "$ORIGIN" rev-parse epic/X-1)" ]
 }
 
+@test "a detached worktree based on origin/HEAD is not fetched as a HEAD branch" {
+  ORIGIN="$TMP/origin"
+  git_q init -q "$ORIGIN"
+  echo 1 > "$ORIGIN/f.txt"; git_q -C "$ORIGIN" add f.txt; git_q -C "$ORIGIN" commit -q -m c1
+  git clone -q "$ORIGIN" "$SRC/a" 2>/dev/null
+  mk_detached a pr origin/HEAD
+  run "$SCRIPT" list
+  [ "$status" -eq 0 ]
+  [ "$(col pr 5)" = "EMPTY" ]
+  [[ "$output" != *"note:"* ]]
+  [[ "$output" != *"warning:"* ]]
+}
+
 @test "the recorded ref is still shown after that branch moves on" {
   mk_repo a
   git_q -C "$SRC/a" branch release/1.0
