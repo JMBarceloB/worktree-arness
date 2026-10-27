@@ -63,7 +63,7 @@ EOF
   unset FAKE_GH_HEADS
 }
 
-teardown() { rm -rf "$TMP"; }
+teardown() { chmod -R u+w "$TMP" 2>/dev/null || true; rm -rf "$TMP"; }
 
 @test "NO_SOURCE when source/ has no repos" {
   run "$SCRIPT" list
@@ -209,6 +209,7 @@ teardown() { rm -rf "$TMP"; }
 #   left-behind: git does unregister the worktree, but a file stays in its dir
 #   still-listed: git does nothing, the worktree stays registered
 #   list-fails: like still-listed, and every later `worktree list` fails
+#   held: like left-behind, but the leftover cannot be deleted (no write permission on its folder)
 fake_git_remove() {
   local real_git
   real_git="$(command -v git)"
@@ -218,7 +219,8 @@ for a in "\$@"; do
   if [ "\$a" = list ] && [ -e "$TMP/remove-tried" ]; then echo "fatal: cannot list worktrees" >&2; exit 128; fi
   [ "\$a" = remove ] || continue
   p="\${!#}"
-  if [ "$1" = left-behind ]; then "$real_git" "\$@" >/dev/null 2>&1; mkdir -p "\$p/node_modules/x"; echo y > "\$p/node_modules/x/f"; fi
+  if [ "$1" = left-behind ] || [ "$1" = held ]; then "$real_git" "\$@" >/dev/null 2>&1; mkdir -p "\$p/node_modules/x"; echo y > "\$p/node_modules/x/f"; fi
+  if [ "$1" = held ]; then chmod a-w "\$p/node_modules/x"; fi
   if [ "$1" = list-fails ]; then : > "$TMP/remove-tried"; fi
   echo "error: failed to delete '\$p': Directory not empty" >&2
   exit 1
@@ -263,25 +265,12 @@ EOF
   [ -f "$ARNESS_ROOT/worktrees/a/feat/x/f.txt" ]
 }
 
-# fake_rm_fails: rm fails for any path under worktrees/, like a file held open on Windows.
-fake_rm_fails() {
-  local real_rm
-  real_rm="$(command -v rm)"
-  cat > "$TMP/bin/rm" <<EOF
-#!/usr/bin/env bash
-for a in "\$@"; do
-  case "\$a" in */worktrees/*) echo "rm: cannot remove '\$a': Device or resource busy" >&2; exit 1 ;; esac
-done
-exec "$real_rm" "\$@"
-EOF
-  chmod +x "$TMP/bin/rm"
-}
-
 @test "remove reports rm-failed and still drops the branch when the left-behind dir is held" {
+  mkdir "$TMP/ro"; chmod a-w "$TMP/ro"
+  if : 2>/dev/null > "$TMP/ro/probe"; then skip "this system ignores a missing write permission (root, Windows)"; fi
   mk_repo a
   mk_wt a feat/x
-  fake_git_remove left-behind
-  fake_rm_fails
+  fake_git_remove held
   run "$SCRIPT" remove --source a feat/x
   [ "$status" -eq 13 ]
   [[ "$output" == *SKIPPED*/worktrees/a/feat/x\ rm-failed ]]
