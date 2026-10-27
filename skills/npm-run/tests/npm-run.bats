@@ -39,12 +39,12 @@ WT() { echo "$ARNESS_ROOT/worktrees/$1"; }
 state() { echo "$ARNESS_ROOT/tmp/npm-run/$1"; }
 
 # group_pids <pgid>: the processes in that process group. Git Bash has no pgrep, but its ps prints the
-# PGID as the third column.
+# PGID as the third column, after a status letter (S, I, O) in front of stopped or waiting processes.
 group_pids() {
   if command -v pgrep >/dev/null 2>&1; then
     pgrep -g "$1" || true
   else
-    ps | awk -v g="$1" 'NR > 1 && $3 == g { print $1 }'
+    ps | awk -v g="$1" 'NR > 1 { sub(/^[^ 0-9]/, " ") } NR > 1 && $3 == g { print $1 }'
   fi
 }
 
