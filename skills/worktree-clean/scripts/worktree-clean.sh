@@ -259,12 +259,14 @@ cmd_list() {
 # unregister the worktree and stop with "Directory not empty"; rm -rf (MSYS too, long paths included) ends it.
 # A worktree git still lists is never deleted by hand. Args: repo_dir path
 remove_worktree() {
-  local repo_dir="$1" path="$2" force=()
+  local repo_dir="$1" path="$2" force=() listed
   [ -n "$path" ] || return 1
   if [ "$FORCE" -eq 1 ]; then force=(--force); fi
   # ${force[@]+...}: bash 3.2 with set -u fails on an empty array.
   git -C "$repo_dir" worktree remove ${force[@]+"${force[@]}"} "$path" >&2 && return 0
-  if git -C "$repo_dir" worktree list --porcelain | grep -qxF "worktree $path"; then return 1; fi
+  # If git cannot list its worktrees we cannot tell it let this one go: never delete by hand then.
+  listed="$(git -C "$repo_dir" worktree list --porcelain)" || return 1
+  if printf '%s\n' "$listed" | grep -qxF "worktree $path"; then return 1; fi
   echo "note: git left $path behind; deleting it" >&2
   rm -rf "$path"
 }
