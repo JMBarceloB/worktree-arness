@@ -769,18 +769,24 @@ mk_detached() {
   [ "$(col release/1.0 6)" = "0" ]
 }
 
-@test "list refreshes the remote ref a detached worktree was checked out from" {
+@test "list refreshes the base of a detached worktree: a commit pushed there is no longer NOT_MERGED" {
   ORIGIN="$TMP/origin"
   git_q init -q "$ORIGIN"
   echo 1 > "$ORIGIN/f.txt"; git_q -C "$ORIGIN" add f.txt; git_q -C "$ORIGIN" commit -q -m c1
   git_q -C "$ORIGIN" branch epic/X-1
   git clone -q "$ORIGIN" "$SRC/a" 2>/dev/null
   mk_detached a pr origin/epic/X-1
-  git_q -C "$ORIGIN" checkout -q epic/X-1
-  echo 2 > "$ORIGIN/g.txt"; git_q -C "$ORIGIN" add g.txt; git_q -C "$ORIGIN" commit -q -m c2
-  run "$SCRIPT" list
+  # A commit made on the detached HEAD, then pushed to the base it came from
+  echo 2 > "$ARNESS_ROOT/worktrees/a/pr/g.txt"
+  git_q -C "$ARNESS_ROOT/worktrees/a/pr" add g.txt; git_q -C "$ARNESS_ROOT/worktrees/a/pr" commit -q -m c2
+  git_q -C "$ORIGIN" fetch -q "$ARNESS_ROOT/worktrees/a/pr" HEAD:refs/heads/epic/X-1
+  run "$SCRIPT" list --no-fetch
   [ "$status" -eq 0 ]
   [ "$(col pr 3)" = "(detached)" ]
+  [ "$(col pr 5)" = "NOT_MERGED" ]
+  run "$SCRIPT" list
+  [ "$status" -eq 0 ]
+  [ "$(col pr 5)" = "EMPTY" ]
   [ "$(git -C "$SRC/a" rev-parse origin/epic/X-1)" = "$(git -C "$ORIGIN" rev-parse epic/X-1)" ]
 }
 

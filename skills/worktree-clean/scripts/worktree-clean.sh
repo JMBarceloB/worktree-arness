@@ -27,8 +27,8 @@
 # Before a worktree is removed, the npm scripts npm-run started in it (dev servers, watchers) are stopped
 # with `npm-run.sh stop --worktree <repo>/<name>`: once its folder is gone they would keep running and
 # holding their ports. If that stop fails the worktree is kept (stop-failed).
-# The base of a worktree is read from git config branch.<name>.arness-base (set by worktree-create);
-# --base is the fallback when it is missing.
+# The base of a worktree is read from git config branch.<name>.arness-base, or arness-worktree.<name>.base for a
+# detached one (both set by worktree-create); --base is the fallback when it is missing.
 # Merge status looks at the base and at its remote side: a worktree is MERGED if its branch is in <base> or
 # in origin/<base> (e.g. merged in origin/develop while the local develop is behind). The remote side is
 # refreshed first with `git fetch origin <branch>`, once per base. If the fetch fails a warning goes to
@@ -225,6 +225,7 @@ prefetch_bases() {
       if [ -n "$FALLBACK" ]; then printf '%s\n' "$FALLBACK"; fi
     } | LC_ALL=C sort -u | while IFS= read -r b; do
       case "$b" in
+        origin/HEAD|HEAD) continue ;;
         origin/?*) br="${b#origin/}" ;;
         -*|"")     continue ;;
         # local base: refresh its remote counterpart, only if origin is known to have it
