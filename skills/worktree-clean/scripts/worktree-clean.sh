@@ -201,7 +201,9 @@ repo_rows() {
   local repo="$1" fallback="$2" repo_dir="$SOURCE_DIR/$1" prefix="$WT_DIR/$1/" line path="" branch="-" name shown
   # Git for Windows lists worktrees as C:/Users/..., while the shell gives /c/Users/...
   # An empty prefix would match every worktree of the repo: list none instead.
-  if command -v cygpath >/dev/null 2>&1; then prefix="$(cygpath -m "$prefix")" || return 0; fi
+  if command -v cygpath >/dev/null 2>&1; then
+    prefix="$(cygpath -m "$prefix")" || { echo "warning: cygpath cannot convert $WT_DIR/$repo/; $repo not listed" >&2; return 0; }
+  fi
   while IFS= read -r line; do
     case "$line" in
       "worktree "*) path="${line#worktree }"; branch="-" ;;
@@ -270,7 +272,9 @@ remove_worktree() {
   git -C "$repo_dir" worktree remove ${force[@]+"${force[@]}"} "$path" >&2 && return 0
   # If git cannot list its worktrees we cannot tell it let this one go: never delete by hand then.
   listed="$(git -C "$repo_dir" worktree list --porcelain)" || return 1
-  if printf '%s\n' "$listed" | grep -qxF "worktree $path"; then return 1; fi
+  # A here-string, not a pipe: grep -q stops at the first match, and under pipefail printf then dies of
+  # SIGPIPE on a list over 64 KB, so a listed worktree would look gone and be deleted.
+  if grep -qxF "worktree $path" <<<"$listed"; then return 1; fi
   echo "note: git left $path behind; deleting it" >&2
   rm -rf "$path" || return 2
 }
@@ -282,7 +286,7 @@ cmd_remove() {
   stop="$WT_DIR/$repo"
   # Same form as the C:/... paths git gives, or the empty-dir cleanup below never meets it and climbs past it.
   if command -v cygpath >/dev/null 2>&1; then
-    stop="$(cygpath -m "$stop")" || die "cygpath cannot convert $stop"
+    stop="$(cygpath -m "$stop")" || die "cygpath cannot convert $WT_DIR/$repo"
   fi
   repo_dir="$SOURCE_DIR/$repo"
 

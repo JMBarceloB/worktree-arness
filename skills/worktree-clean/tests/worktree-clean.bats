@@ -43,6 +43,23 @@ mk_remote_wt_nocommit() {
   git_q -C "$SRC/a" config branch.w.arness-base origin/epic/X-1
 }
 
+# fake_cygpath ok|fail: a cygpath first in PATH that logs each call to $TMP/cygpath.log. ok passes the call
+# to the real cygpath (Git Bash) or prints the path as it is (Linux, macOS: no drive letters); fail exits 1.
+fake_cygpath() {
+  local real
+  real="$(command -v cygpath || true)"
+  mkdir -p "$TMP/cygbin"
+  cat > "$TMP/cygbin/cygpath" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >> "$TMP/cygpath.log"
+[ "$1" = ok ] || exit 1
+if [ -n "$real" ]; then exec "$real" "\$@"; fi
+printf '%s\n' "\${!#}"
+EOF
+  chmod +x "$TMP/cygbin/cygpath"
+  export PATH="$TMP/cygbin:$PATH"
+}
+
 setup() {
   TMP="$(mktemp -d)"
   TMP="$(cd -P "$TMP" && pwd -P)"   # the script prints physical paths; /var is a symlink on macOS
@@ -210,6 +227,7 @@ teardown() { chmod -R u+w "$TMP" 2>/dev/null || true; rm -rf "$TMP"; }
 #   still-listed: git does nothing, the worktree stays registered
 #   list-fails: like still-listed, and every later `worktree list` fails
 #   held: like left-behind, but the leftover cannot be deleted (no write permission on its folder)
+#   still-listed-big: like still-listed, and `worktree list` adds 5000 other worktrees (over 64 KB)
 fake_git_remove() {
   local real_git
   real_git="$(command -v git)"
@@ -217,6 +235,11 @@ fake_git_remove() {
 #!/usr/bin/env bash
 for a in "\$@"; do
   if [ "\$a" = list ] && [ -e "$TMP/remove-tried" ]; then echo "fatal: cannot list worktrees" >&2; exit 128; fi
+  if [ "\$a" = list ] && [ "$1" = still-listed-big ]; then
+    "$real_git" "\$@" || exit
+    for i in \$(seq 5000); do printf 'worktree /elsewhere/%s\nHEAD %040d\ndetached\n\n' "\$i" 0; done
+    exit 0
+  fi
   [ "\$a" = remove ] || continue
   p="\${!#}"
   if [ "$1" = left-behind ] || [ "$1" = held ]; then "$real_git" "\$@" >/dev/null 2>&1; mkdir -p "\$p/node_modules/x"; echo y > "\$p/node_modules/x/f"; fi
@@ -278,6 +301,54 @@ EOF
   [ -d "$ARNESS_ROOT/worktrees/a/feat/x" ]
   [ -z "$(git -C "$SRC/a" branch --list feat/x)" ]
   [ -z "$(git -C "$SRC/a" worktree list --porcelain | grep "/worktrees/a/feat/x$")" ]
+}
+
+@test "remove never deletes by hand a worktree that git still lists in a list over 64 KB" {
+  mk_repo a
+  mk_wt a feat/x
+  fake_git_remove still-listed-big
+  run "$SCRIPT" remove --source a feat/x
+  [ "$status" -eq 13 ]
+  [[ "$output" == *SKIPPED*/worktrees/a/feat/x\ git-failed ]]
+  [[ "$output" != *"note: git left"* ]]
+  [ -f "$ARNESS_ROOT/worktrees/a/feat/x/f.txt" ]
+}
+
+@test "list and remove convert the worktrees dir with cygpath when it exists" {
+  mk_repo a
+  mk_wt a feat/x
+  fake_cygpath ok
+  run "$SCRIPT" list --no-fetch
+  [ "$status" -eq 0 ]
+  [ "$(col feat/x 1)" = a ]
+  run "$SCRIPT" remove --source a feat/x
+  [ "$status" -eq 0 ]
+  [[ "$output" == *REMOVED*/worktrees/a/feat/x ]]
+  [ ! -e "$ARNESS_ROOT/worktrees/a/feat" ]
+  [ -d "$ARNESS_ROOT/worktrees/a" ]
+  grep -q -- '^-m .*/worktrees/a/$' "$TMP/cygpath.log"
+  grep -q -- '^-m .*/worktrees/a$' "$TMP/cygpath.log"
+}
+
+@test "list warns and leaves out a repo whose worktrees dir cygpath cannot convert" {
+  mk_repo a
+  mk_wt a feat/x
+  fake_cygpath fail
+  run "$SCRIPT" list --no-fetch
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"warning: cygpath cannot convert "*"/worktrees/a/; a not listed"* ]]
+  [[ "$output" == *NONE ]]
+}
+
+@test "remove stops with an error when cygpath cannot convert the worktrees dir" {
+  mk_repo a
+  mk_wt a feat/x
+  fake_cygpath fail
+  run "$SCRIPT" remove --source a feat/x
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"error: cygpath cannot convert "*"/worktrees/a"* ]]
+  [ -f "$ARNESS_ROOT/worktrees/a/feat/x/f.txt" ]
+  [ -n "$(git -C "$SRC/a" branch --list feat/x)" ]
 }
 
 @test "remove several names at once" {

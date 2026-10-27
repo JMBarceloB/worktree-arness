@@ -88,7 +88,9 @@ list_worktrees() {
     repo="$(basename "$repo_dir")"
     prefix="$ROOT/worktrees/$repo/"
     # Git for Windows lists worktrees as C:/Users/..., while the shell gives /c/Users/...
-    if command -v cygpath >/dev/null 2>&1; then prefix="$(cygpath -m "$prefix")" || continue; fi
+    if command -v cygpath >/dev/null 2>&1; then
+      prefix="$(cygpath -m "$prefix")" || { echo "warning: cygpath cannot convert $ROOT/worktrees/$repo/; $repo not listed" >&2; continue; }
+    fi
     while IFS= read -r line; do
       case "$line" in
         "worktree $prefix"?*)

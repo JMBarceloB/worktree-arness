@@ -48,6 +48,23 @@ group_pids() {
   fi
 }
 
+# fake_cygpath ok|fail: a cygpath first in PATH that logs each call to $TMP/cygpath.log. ok passes the call
+# to the real cygpath (Git Bash) or prints the path as it is (Linux, macOS: no drive letters); fail exits 1.
+fake_cygpath() {
+  local real
+  real="$(command -v cygpath || true)"
+  mkdir -p "$TMP/cygbin"
+  cat > "$TMP/cygbin/cygpath" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >> "$TMP/cygpath.log"
+[ "$1" = ok ] || exit 1
+if [ -n "$real" ]; then exec "$real" "\$@"; fi
+printf '%s\n' "\${!#}"
+EOF
+  chmod +x "$TMP/cygbin/cygpath"
+  export PATH="$TMP/cygbin:$PATH"
+}
+
 setup() {
   command -v npm >/dev/null 2>&1 || skip "npm not installed"
   TMP="$(mktemp -d)"
@@ -225,6 +242,45 @@ teardown() {
 
   run "$SCRIPT" ps
   [ "$output" = "NONE" ]
+}
+
+@test "stop ends the Windows process tree with taskkill in Git Bash" {
+  [ -r "/proc/$$/winpid" ] || skip "only Git Bash (Windows) has /proc/<pid>/winpid"
+  local real
+  real="$(command -v taskkill)"
+  mkdir -p "$TMP/tkbin"
+  # taskkill that logs its arguments, then runs the real one
+  cat > "$TMP/tkbin/taskkill" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >> "$TMP/taskkill.log"
+exec "$real" "\$@"
+EOF
+  chmod +x "$TMP/tkbin/taskkill"
+  export PATH="$TMP/tkbin:$PATH"
+  "$SCRIPT" run serve >/dev/null
+  pid="$(cat "$(state a/feat/x)/serve.pid")"
+  winpid="$(cat "/proc/$pid/winpid")"
+
+  run "$SCRIPT" stop --worktree a/feat/x serve
+  [ "$status" -eq 0 ]
+  [ "$output" = "STOPPED a/feat/x serve $pid" ]
+  grep -qx "//T //F //PID $winpid" "$TMP/taskkill.log"
+}
+
+@test "worktrees are matched through cygpath when it exists" {
+  fake_cygpath ok
+  run "$SCRIPT" run ok
+  [ "$status" -eq 0 ]
+  [[ "$output" == "FINISHED a/feat/x ok 0 "* ]]
+  grep -q -- '^-m .*/worktrees/a/$' "$TMP/cygpath.log"
+}
+
+@test "a repo whose worktrees dir cygpath cannot convert is left out with a warning" {
+  fake_cygpath fail
+  run "$SCRIPT" run ok
+  [ "$status" -eq 4 ]
+  [[ "$output" == *"warning: cygpath cannot convert "*"/worktrees/a/; a not listed"* ]]
+  [[ "$output" == *NO_WORKTREE ]]
 }
 
 @test "ps reports EXITED for a dead pid and forgets it" {

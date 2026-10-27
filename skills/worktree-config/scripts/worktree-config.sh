@@ -138,8 +138,11 @@ main() {
   fi
 
   # It must be a real worktree of source/<repo>, not just a folder.
+  # A here-string, not a pipe: grep -q stops at the first match, and a list over 64 KB then dies of SIGPIPE.
+  local wts
   if [ -L "$WT" ] || [ ! -e "$root/source/$repo/.git" ] ||
-     ! git -C "$root/source/$repo" worktree list --porcelain 2>/dev/null | grep -Fxq "worktree $listed"; then
+     ! wts="$(git -C "$root/source/$repo" worktree list --porcelain 2>/dev/null)" ||
+     ! grep -Fxq "worktree $listed" <<<"$wts"; then
     echo "NOT_FOUND $WT"
     exit "$EXIT_NOT_FOUND"
   fi
