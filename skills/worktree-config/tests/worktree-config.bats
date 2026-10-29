@@ -2,6 +2,8 @@
 # Unit tests for skills/worktree-config/scripts/worktree-config.sh.
 # Each test runs against a throwaway ARNESS_ROOT with a local repo in source/.
 
+load ../../../tests/helpers
+
 SKILL_DIR="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
 SCRIPT="$SKILL_DIR/scripts/worktree-config.sh"
 
@@ -25,23 +27,6 @@ cfg() {
 }
 
 WT() { echo "$ARNESS_ROOT/worktrees/$1/$2"; }
-
-# fake_cygpath ok|fail: a cygpath first in PATH that logs each call to $TMP/cygpath.log. ok passes the call
-# to the real cygpath (Git Bash) or prints the path as it is (Linux, macOS: no drive letters); fail exits 1.
-fake_cygpath() {
-  local real
-  real="$(command -v cygpath || true)"
-  mkdir -p "$TMP/cygbin"
-  cat > "$TMP/cygbin/cygpath" <<EOF
-#!/usr/bin/env bash
-echo "\$*" >> "$TMP/cygpath.log"
-[ "$1" = ok ] || exit 1
-if [ -n "$real" ]; then exec "$real" "\$@"; fi
-printf '%s\n' "\${!#}"
-EOF
-  chmod +x "$TMP/cygbin/cygpath"
-  export PATH="$TMP/cygbin:$PATH"
-}
 
 setup() {
   TMP="$(mktemp -d)"
@@ -126,7 +111,7 @@ EOF
   run "$SCRIPT" a/feat/x
   [ "$status" -eq 0 ]
   [ "$(cat "$(WT a feat/x)/f.txt")" = hi ]
-  grep -q -- '^-m .*/worktrees/a/feat/x$' "$TMP/cygpath.log"
+  grep -q -- '^-m .*/worktrees/a/feat/x$' "$CYGPATH_LOG"
 }
 
 @test "stops with an error and copies nothing when cygpath cannot convert the worktree path" {

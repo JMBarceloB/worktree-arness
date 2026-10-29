@@ -2,6 +2,8 @@
 # Unit tests for skills/worktree-clean/scripts/worktree-clean.sh.
 # Each test runs against a throwaway ARNESS_ROOT with local repos in source/.
 
+load ../../../tests/helpers
+
 SKILL_DIR="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
 SCRIPT="$SKILL_DIR/scripts/worktree-clean.sh"
 
@@ -31,6 +33,11 @@ merge_wt() { git_q -C "$SRC/$1" merge -q --no-ff -m merge "$2"; }
 # column <n> of the row whose name (col 2) is <name>
 col() { printf '%s\n' "$output" | awk -F'\t' -v n="$1" -v c="$2" '$2 == n { print $c }'; }
 
+# git_path <path>: <path> as git prints it: C:/... through cygpath -m in Git Bash, unchanged elsewhere.
+git_path() {
+  if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s\n' "$1"; fi
+}
+
 # source/a is a clone of origin; worktree w is freshly made from origin/epic/X-1 (no commits of its own).
 mk_remote_wt_nocommit() {
   ORIGIN="$TMP/origin"
@@ -41,23 +48,6 @@ mk_remote_wt_nocommit() {
   git_q -C "$ORIGIN" checkout -q main
   git_q -C "$SRC/a" worktree add -q -b w "$ARNESS_ROOT/worktrees/a/w" origin/epic/X-1
   git_q -C "$SRC/a" config branch.w.arness-base origin/epic/X-1
-}
-
-# fake_cygpath ok|fail: a cygpath first in PATH that logs each call to $TMP/cygpath.log. ok passes the call
-# to the real cygpath (Git Bash) or prints the path as it is (Linux, macOS: no drive letters); fail exits 1.
-fake_cygpath() {
-  local real
-  real="$(command -v cygpath || true)"
-  mkdir -p "$TMP/cygbin"
-  cat > "$TMP/cygbin/cygpath" <<EOF
-#!/usr/bin/env bash
-echo "\$*" >> "$TMP/cygpath.log"
-[ "$1" = ok ] || exit 1
-if [ -n "$real" ]; then exec "$real" "\$@"; fi
-printf '%s\n' "\${!#}"
-EOF
-  chmod +x "$TMP/cygbin/cygpath"
-  export PATH="$TMP/cygbin:$PATH"
 }
 
 setup() {
@@ -326,8 +316,8 @@ EOF
   [[ "$output" == *REMOVED*/worktrees/a/feat/x ]]
   [ ! -e "$ARNESS_ROOT/worktrees/a/feat" ]
   [ -d "$ARNESS_ROOT/worktrees/a" ]
-  grep -q -- '^-m .*/worktrees/a/$' "$TMP/cygpath.log"
-  grep -q -- '^-m .*/worktrees/a$' "$TMP/cygpath.log"
+  grep -q -- '^-m .*/worktrees/a/$' "$CYGPATH_LOG"
+  grep -q -- '^-m .*/worktrees/a$' "$CYGPATH_LOG"
 }
 
 @test "list warns and leaves out a repo whose worktrees dir cygpath cannot convert" {
@@ -613,7 +603,7 @@ squash_merge_pr() {
   squash_merge_pr
   run "$SCRIPT" remove --source a pr/X-2
   [ "$status" -eq 0 ]
-  [[ "$output" == *"REMOVED $ARNESS_ROOT/worktrees/a/pr/X-2"* ]]
+  [[ "$output" == *"REMOVED $(git_path "$ARNESS_ROOT/worktrees/a/pr/X-2")"* ]]
   [ ! -e "$ARNESS_ROOT/worktrees/a/pr" ]
   [ -z "$(git -C "$SRC/a" branch --list pr/X-2)" ]
   ! git -C "$SRC/a" rev-parse --verify --quiet refs/remotes/origin/pr/X-2
@@ -671,7 +661,7 @@ commit_on_pr_wt() {
   commit_on_pr_wt push
   run "$SCRIPT" remove --source a pr/X-2
   [ "$status" -eq 0 ]
-  [[ "$output" == *"REMOVED $ARNESS_ROOT/worktrees/a/pr/X-2"* ]]
+  [[ "$output" == *"REMOVED $(git_path "$ARNESS_ROOT/worktrees/a/pr/X-2")"* ]]
   [ -z "$(git -C "$SRC/a" branch --list pr/X-2)" ]
 }
 
@@ -763,7 +753,7 @@ commit_on_remote_wt() {
   commit_on_remote_wt push
   run "$SCRIPT" remove --source a w
   [ "$status" -eq 0 ]
-  [[ "$output" == *"REMOVED $ARNESS_ROOT/worktrees/a/w"* ]]
+  [[ "$output" == *"REMOVED $(git_path "$ARNESS_ROOT/worktrees/a/w")"* ]]
   [ -z "$(git -C "$SRC/a" branch --list w)" ]
   git -C "$ORIGIN" rev-parse --verify --quiet refs/heads/w >/dev/null
 }
@@ -990,7 +980,7 @@ mk_detached() {
   mk_detached a release/1.0 release/1.0
   run "$SCRIPT" remove --source a release/1.0
   [ "$status" -eq 0 ]
-  [ "$output" = "REMOVED $ARNESS_ROOT/worktrees/a/release/1.0" ]
+  [ "$output" = "REMOVED $(git_path "$ARNESS_ROOT/worktrees/a/release/1.0")" ]
   [ ! -e "$ARNESS_ROOT/worktrees/a/release" ]
   [ "$(git -C "$SRC/a" branch --format='%(refname:short)' | tr '\n' ' ')" = "main release/1.0 " ]
   [ -z "$(git -C "$SRC/a" config --get-regexp '^arness-worktree\.' || true)" ]
