@@ -1,6 +1,6 @@
 ---
 name: npm-run
-description: Run an npm script of a worktree in the background, and list, stop or clean up the ones started. Use whenever the user asks to run, start, launch, list, stop or clean up an npm script in a worktree, e.g. "lanza npm start en el worktree", "arranca el dev server", "ejecuta los tests de X", "para el start", "limpia los logs de npm". Always use this skill, never `npm run` or its script directly. Fails with NO_COMMAND, UNKNOWN_SCRIPT or NO_PACKAGE_JSON.
+description: Run an npm script of a worktree in the background, and list, stop or clean up the ones started. Use whenever the user asks to run, start, launch, list, stop or clean up an npm script in a worktree, e.g. "lanza npm start en el worktree", "arranca el dev server", "ejecuta los tests de X", "para el start", "limpia los logs de npm". Always use this skill, never `npm run` or its script directly. Fails with NO_COMMAND, UNKNOWN_SCRIPT, NO_PACKAGE_JSON or NO_NODE_VERSION.
 allowed-tools: Bash(skills/npm-run/scripts/npm-run.sh *)
 ---
 
@@ -10,7 +10,8 @@ allowed-tools: Bash(skills/npm-run/scripts/npm-run.sh *)
 
 Runs `npm run <script> [-- <args>]` in `worktrees/<repo>/<name>`, in the background, with its output in a log and its pid saved, so it can be stopped later (with its child processes).
 All checks are done by `scripts/npm-run.sh` (in this skill's folder): the worktree exists, `package.json` is at its root, the script is a key of its `"scripts"`, and `node_modules` is there. Only npm; only the `package.json` at the worktree root.
-With an `.nvmrc` at the worktree root, the install and the script run with that node version from nvm (`NVM_DIR`) or nvm-windows (`NVM_HOME`). It goes first in their PATH only, so the global node is left alone; `22` picks the highest `22.x` installed. An alias or range (`lts/*`, `node`, `22.x`) is not resolved: a `note:` on stderr, and the current node runs; relay it. Without nvm or nvm-windows installed (node from a package manager, fnm, volta), a version the current node does not match gives a `warning:` on stderr and the current node runs; relay it too.
+With an `.nvmrc` at the worktree root, the install and the script run with that node version from nvm (`NVM_DIR`, else `~/.nvm` or `$XDG_CONFIG_HOME/nvm`) or nvm-windows (`NVM_HOME`). It goes first in their PATH only, so the global node is left alone; `22` and `22.x` pick the highest `22.x` installed. Only a `NODE` line guarantees that version; an alias (`lts/*`, `node`) is not resolved and gives `NODE_UNRESOLVED`.
+Policy for a version that is missing: with nvm installed (`NVM_HOME` set, or `nvm.sh` or `versions/node` in its folder) the script stops with `NO_NODE_VERSION` (exit 13); without nvm (node from a package manager, fnm, volta) it only gives a `warning:` on stderr and runs with the current node; relay it.
 
 ## Procedure
 
@@ -35,7 +36,8 @@ With an `.nvmrc` at the worktree root, the install and the script run with that 
 | `NO_PACKAGE_JSON <path>` / `INVALID_PACKAGE_JSON <path>` | 6 | **Finish with NO_PACKAGE_JSON** (or INVALID_PACKAGE_JSON). |
 | `CONFIRM_INSTALL <slug>` | 11 | No `node_modules`. Ask: install the dependencies? Yes: rerun with `--install` (runs `npm ci`, or `npm install` without a lock file; it may take minutes, use a long timeout). No: finish. |
 | `NODE <slug> <version>` | — | The `.nvmrc` node is used; comes before `INSTALLED`/`STARTED`/`FINISHED`. Report it. |
-| `NO_NODE_VERSION <slug> <version>` | 13 | nvm is installed, but neither it nor the current node has the `.nvmrc` version. Nothing ran. Suggest `nvm install <version>`; do not run it with another node. |
+| `NODE_UNRESOLVED <slug> <alias>` | — | The `.nvmrc` alias was not checked and the current node runs; same place as `NODE`. Tell the user. |
+| `NO_NODE_VERSION <slug> <version>` | 13 | **Finish with NO_NODE_VERSION**: nvm is installed, but neither it nor the current node has the `.nvmrc` version. Nothing ran. Suggest `nvm install <version>`; do not run it with another node. |
 | `INSTALLED <slug> <log>` | — | Comes before `STARTED`/`FINISHED`; report it. |
 | `INSTALL_FAILED <code> <log>` | 12 | Show the stderr lines. Do not retry. |
 | `ALREADY_RUNNING <slug> <script> <pid>` | 9 | Tell the user. Offer to stop it first; never start a second one. |

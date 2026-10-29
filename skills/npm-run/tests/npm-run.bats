@@ -422,14 +422,72 @@ JSON
   [ "$output" = "NO_NODE_VERSION a/feat/x 2" ]
 }
 
-@test ".nvmrc: without nvm, a current node that matches just runs" {
+@test ".nvmrc: without nvm, a current node that matches runs and is reported with NODE" {
   nvmrc_setup
   local cur
   cur="$(node --version)"
   echo "${cur%%.*}" > "$(WT a/feat/x)/.nvmrc"
   run "$SCRIPT" run ver
   [ "$status" -eq 0 ]
-  [[ "$output" == "FINISHED a/feat/x ver 0 "* ]]
+  [ "${lines[0]}" = "NODE a/feat/x ${cur#v}" ]
+  [[ "${lines[1]}" == "FINISHED a/feat/x ver 0 "* ]]
+}
+
+@test ".nvmrc: NO_COMMAND and UNKNOWN_SCRIPT come before NO_NODE_VERSION" {
+  nvmrc_setup
+  export NVM_DIR="$TMP/nvm"
+  fake_node "$NVM_DIR/versions/node/v20.19.0/bin" 20.19.0
+  echo 99.1 > "$(WT a/feat/x)/.nvmrc"
+  run "$SCRIPT" run
+  [ "$status" -eq 5 ]
+  [ "${lines[0]}" = "NO_COMMAND a/feat/x" ]
+  [ "${lines[1]}" = "SCRIPT ver" ]
+  run "$SCRIPT" run vre
+  [ "$status" -eq 7 ]
+  [ "${lines[0]}" = "UNKNOWN_SCRIPT a/feat/x vre" ]
+}
+
+@test ".nvmrc: 22.x picks the highest 22.x, like 22" {
+  nvmrc_setup
+  export NVM_DIR="$TMP/nvm"
+  fake_node "$NVM_DIR/versions/node/v22.9.0/bin" 22.9.0
+  fake_node "$NVM_DIR/versions/node/v22.17.1/bin" 22.17.1
+  echo 22.x > "$(WT a/feat/x)/.nvmrc"
+  run "$SCRIPT" run ver
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "NODE a/feat/x 22.17.1" ]
+}
+
+@test ".nvmrc: with NVM_DIR unset, nvm is also found in the XDG config folder" {
+  nvmrc_setup
+  unset NVM_DIR XDG_CONFIG_HOME
+  fake_node "$TMP/home/.config/nvm/versions/node/v22.17.1/bin" 22.17.1
+  echo 22 > "$(WT a/feat/x)/.nvmrc"
+  HOME="$TMP/home" run "$SCRIPT" run ver
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "NODE a/feat/x 22.17.1" ]
+  # A version it lacks stops there too: that nvm counts as installed.
+  echo 99.1 > "$(WT a/feat/x)/.nvmrc"
+  HOME="$TMP/home" run "$SCRIPT" run ver
+  [ "$status" -eq 13 ]
+  [ "$output" = "NO_NODE_VERSION a/feat/x 99.1" ]
+  # XDG_CONFIG_HOME, when set, is where it looks.
+  mkdir -p "$TMP/xdg"
+  mv "$TMP/home/.config/nvm" "$TMP/xdg/nvm"
+  echo 22 > "$(WT a/feat/x)/.nvmrc"
+  HOME="$TMP/home" XDG_CONFIG_HOME="$TMP/xdg" run "$SCRIPT" run ver
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "NODE a/feat/x 22.17.1" ]
+}
+
+@test ".nvmrc: a big file is read without SIGPIPE" {
+  nvmrc_setup
+  export NVM_DIR="$TMP/nvm"
+  fake_node "$NVM_DIR/versions/node/v22.17.1/bin" 22.17.1
+  awk 'BEGIN { print 22; for (i = 0; i < 200000; i++) print "22.17.1" }' > "$(WT a/feat/x)/.nvmrc"
+  run "$SCRIPT" run ver
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "NODE a/feat/x 22.17.1" ]
 }
 
 @test ".nvmrc: without nvm, a current node that does not match runs with a warning" {
@@ -458,13 +516,17 @@ JSON
   [ "$output" = "NO_NODE_VERSION a/feat/x 99.1" ]
 }
 
-@test ".nvmrc: an alias is not resolved; a note, and the current node runs" {
+@test ".nvmrc: an alias is not resolved; NODE_UNRESOLVED, and the current node runs" {
   nvmrc_setup
+  export NVM_DIR="$TMP/nvm"
+  fake_node "$NVM_DIR/versions/node/v22.17.1/bin" 22.17.1
   echo 'lts/*' > "$(WT a/feat/x)/.nvmrc"
   run "$SCRIPT" run ver
   [ "$status" -eq 0 ]
-  [[ "$output" == *"note: .nvmrc says 'lts/*'"* ]]
+  [[ "$output" == *"note: .nvmrc asks for 'lts/*', an alias npm-run does not resolve"* ]]
+  [[ "$output" == *"NODE_UNRESOLVED a/feat/x lts/*"* ]]
   [[ "$output" == *"FINISHED a/feat/x ver 0 "* ]]
+  [[ "$output" != *"NODE a/feat/x"* ]]
 }
 
 # no_node_path: NO_NODE_PATH = PATH without the folders of the global node and npm. Skips the test when
