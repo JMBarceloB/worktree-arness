@@ -47,6 +47,14 @@ teardown() { rm -rf "$TMP"; }
   [ "$output" = "NO_WORKTREE" ]
 }
 
+@test "-h prints the whole header, exit codes included" {
+  run "$SCRIPT" -h
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Exit codes:"* ]]
+  [[ "$output" == *"13 some file skipped."* ]]
+  [[ "$output" != *"set -euo"* ]]
+}
+
 @test "NO_WORKTREE when the slug has no name" {
   run "$SCRIPT" a
   [ "$status" -eq 5 ]

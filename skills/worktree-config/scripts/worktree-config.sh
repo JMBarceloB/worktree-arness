@@ -110,7 +110,7 @@ main() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --worktree) [ $# -ge 2 ] || die "--worktree needs a value"; slug="$2"; shift 2 ;;
-      -h|--help)  sed -n '2,22p' "${BASH_SOURCE[0]}"; exit 0 ;;
+      -h|--help)  awk 'NR > 1 && /^set -euo/ { exit } NR > 1' "${BASH_SOURCE[0]}"; exit 0 ;;
       -*)         die "unknown option: $1" ;;
       *)          [ -z "$slug" ] || die "only one worktree allowed"; slug="$1"; shift ;;
     esac

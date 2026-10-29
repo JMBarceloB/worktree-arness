@@ -444,4 +444,6 @@ EOF
   run "$SCRIPT" -h
   [ "$status" -eq 0 ]
   [[ "$output" == *"Exit codes:"* ]]
+  [[ "$output" == *"14 stop failed"* ]]
+  [[ "$output" != *"set -euo"* ]]
 }
