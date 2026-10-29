@@ -334,7 +334,7 @@ teardown() {
   run "$SCRIPT" -h
   [ "$status" -eq 0 ]
   [[ "$output" == *"Exit codes:"* ]]
-  [[ "$output" == *"13 node version of .nvmrc not installed."* ]]
+  [[ "$output" == *"13 node version of .nvmrc not installed"* ]]
 }
 
 # --- .nvmrc ------------------------------------------------------------------------
