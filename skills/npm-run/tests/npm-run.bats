@@ -3,6 +3,8 @@
 # Each test builds a throwaway ARNESS_ROOT with local repos and worktrees. npm runs for real, offline,
 # on scripts that only echo, sleep or exit: no network and no dependencies.
 
+load ../../../tests/helpers
+
 SKILL_DIR="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
 SCRIPT="$SKILL_DIR/scripts/npm-run.sh"
 
@@ -46,23 +48,6 @@ group_pids() {
   else
     ps | awk -v g="$1" 'NR > 1 { sub(/^[^ 0-9]/, " ") } NR > 1 && $3 == g { print $1 }'
   fi
-}
-
-# fake_cygpath ok|fail: a cygpath first in PATH that logs each call to $TMP/cygpath.log. ok passes the call
-# to the real cygpath (Git Bash) or prints the path as it is (Linux, macOS: no drive letters); fail exits 1.
-fake_cygpath() {
-  local real
-  real="$(command -v cygpath || true)"
-  mkdir -p "$TMP/cygbin"
-  cat > "$TMP/cygbin/cygpath" <<EOF
-#!/usr/bin/env bash
-echo "\$*" >> "$TMP/cygpath.log"
-[ "$1" = ok ] || exit 1
-if [ -n "$real" ]; then exec "$real" "\$@"; fi
-printf '%s\n' "\${!#}"
-EOF
-  chmod +x "$TMP/cygbin/cygpath"
-  export PATH="$TMP/cygbin:$PATH"
 }
 
 setup() {
@@ -244,7 +229,7 @@ teardown() {
   [ "$output" = "NONE" ]
 }
 
-@test "stop ends the Windows process tree with taskkill in Git Bash" {
+@test "stop ends the Windows process tree with taskkill in Git Bash, also with MSYS_NO_PATHCONV=1" {
   [ -r "/proc/$$/winpid" ] || skip "only Git Bash (Windows) has /proc/<pid>/winpid"
   local real
   real="$(command -v taskkill)"
@@ -261,10 +246,69 @@ EOF
   pid="$(cat "$(state a/feat/x)/serve.pid")"
   winpid="$(cat "/proc/$pid/winpid")"
 
+  run env MSYS_NO_PATHCONV=1 "$SCRIPT" stop --worktree a/feat/x serve
+  [ "$status" -eq 0 ]
+  [ "$output" = "STOPPED a/feat/x serve $pid" ]
+  grep -qx "/T /F /PID $winpid" "$TMP/taskkill.log"
+}
+
+@test "stop ends a native node an MSYS shell keeps as its parent, also with MSYS_NO_PATHCONV=1" {
+  [ -r "/proc/$$/winpid" ] || skip "only Git Bash (Windows) has /proc/<pid>/winpid"
+  local wt nodepid
+  wt="$(WT a/feat/x)"
+  # sh stays as the parent of node: the `exit 0` after it keeps sh from replacing itself with node.
+  # A TERM to the group ends sh but not node; only taskkill /T ends both.
+  printf '%s\n' "require('fs').writeFileSync('node.pid', String(process.pid)); setInterval(function () {}, 1000);" > "$wt/server.js"
+  printf '%s\n' 'node server.js' 'exit 0' > "$wt/tree.sh"
+  cat > "$wt/package.json" <<'EOF'
+{ "name": "fixture", "version": "1.0.0", "scripts": { "tree": "sh tree.sh" } }
+EOF
+  "$SCRIPT" run tree >/dev/null
+  for _ in $(seq 100); do
+    if [ -s "$wt/node.pid" ]; then break; fi
+    sleep 0.1
+  done
+  nodepid="$(cat "$wt/node.pid")"
+
+  run env MSYS_NO_PATHCONV=1 "$SCRIPT" stop --worktree a/feat/x tree
+  [ "$status" -eq 0 ]
+  [[ "$output" == "STOPPED a/feat/x tree "* ]]
+  # 128: no such process. 0 would mean node was still alive (it is ended here, then).
+  run env MSYS2_ARG_CONV_EXCL='*' taskkill /F /PID "$nodepid"
+  [ "$status" -eq 128 ]
+}
+
+@test "stop reports STOP_FAILED and keeps the pid when taskkill cannot end the tree" {
+  [ -r "/proc/$$/winpid" ] || skip "only Git Bash (Windows) has /proc/<pid>/winpid"
+  mkdir -p "$TMP/tkbin"
+  printf '#!/usr/bin/env bash\necho "access denied" >&2\nexit 1\n' > "$TMP/tkbin/taskkill"
+  chmod +x "$TMP/tkbin/taskkill"
+  "$SCRIPT" run serve >/dev/null
+  pid="$(cat "$(state a/feat/x)/serve.pid")"
+
+  PATH="$TMP/tkbin:$PATH" run "$SCRIPT" stop --worktree a/feat/x serve
+  [ "$status" -eq 14 ]
+  [[ "$output" == *"STOP_FAILED a/feat/x serve $pid"* ]]
+  [[ "$output" == *"warning: taskkill could not end the process tree of $pid: access denied"* ]]
+  [[ "$output" != *"STOPPED"* ]]
+  [ -e "$(state a/feat/x)/serve.pid" ]
+  # The real taskkill ends it, and the pid kept lets stop do it.
   run "$SCRIPT" stop --worktree a/feat/x serve
   [ "$status" -eq 0 ]
   [ "$output" = "STOPPED a/feat/x serve $pid" ]
-  grep -qx "//T //F //PID $winpid" "$TMP/taskkill.log"
+}
+
+@test "stop still finds its npm through /proc when ps cannot print it" {
+  [ -d /proc/self ] || skip "no /proc here"
+  mkdir -p "$TMP/psbin"
+  printf '#!/bin/sh\nexit 1\n' > "$TMP/psbin/ps"
+  chmod +x "$TMP/psbin/ps"
+  "$SCRIPT" run serve >/dev/null
+  pid="$(cat "$(state a/feat/x)/serve.pid")"
+
+  PATH="$TMP/psbin:$PATH" run "$SCRIPT" stop --worktree a/feat/x serve
+  [ "$status" -eq 0 ]
+  [ "$output" = "STOPPED a/feat/x serve $pid" ]
 }
 
 @test "worktrees are matched through cygpath when it exists" {
@@ -272,7 +316,7 @@ EOF
   run "$SCRIPT" run ok
   [ "$status" -eq 0 ]
   [[ "$output" == "FINISHED a/feat/x ok 0 "* ]]
-  grep -q -- '^-m .*/worktrees/a/$' "$TMP/cygpath.log"
+  grep -q -- '^-m .*/worktrees/a/$' "$CYGPATH_LOG"
 }
 
 @test "a repo whose worktrees dir cygpath cannot convert is left out with a warning" {
