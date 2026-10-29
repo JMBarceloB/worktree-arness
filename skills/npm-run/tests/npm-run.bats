@@ -355,7 +355,7 @@ fake_node() {
 
 nvmrc_setup() {
   REAL_NODE="$(command -v node)"
-  # No nvm of this machine: an empty NVM_DIR (it defaults to ~/.nvm) and no NVM_HOME.
+  # No nvm of this machine: NVM_DIR set to an empty folder (unset, it would look in ~/.nvm and the XDG one) and no NVM_HOME.
   export NVM_DIR="$TMP/no-nvm"
   unset NVM_HOME
   # A script that reports the node it sees.
@@ -527,6 +527,50 @@ JSON
   [[ "$output" == *"NODE_UNRESOLVED a/feat/x lts/*"* ]]
   [[ "$output" == *"FINISHED a/feat/x ver 0 "* ]]
   [[ "$output" != *"NODE a/feat/x"* ]]
+}
+
+@test ".nvmrc: the NODE or NODE_UNRESOLVED line comes before the install question" {
+  nvmrc_setup
+  export NVM_DIR="$TMP/nvm"
+  fake_node "$NVM_DIR/versions/node/v22.17.1/bin" 22.17.1
+  rm -rf "$(WT a/feat/x)/node_modules"
+  echo 22 > "$(WT a/feat/x)/.nvmrc"
+  run "$SCRIPT" run ver
+  [ "$status" -eq 11 ]
+  [ "$output" = "NODE a/feat/x 22.17.1"$'\n'"CONFIRM_INSTALL a/feat/x" ]
+  echo 'lts/*' > "$(WT a/feat/x)/.nvmrc"
+  run "$SCRIPT" run ver
+  [ "$status" -eq 11 ]
+  [[ "$output" == *"NODE_UNRESOLVED a/feat/x lts/*"*"CONFIRM_INSTALL a/feat/x" ]]
+}
+
+@test ".nvmrc: only the first field counts, and v or .x alone is not a version" {
+  nvmrc_setup
+  export NVM_DIR="$TMP/nvm"
+  fake_node "$NVM_DIR/versions/node/v22.17.1/bin" 22.17.1
+  printf '  22 20\n' > "$(WT a/feat/x)/.nvmrc"
+  run "$SCRIPT" run ver
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "NODE a/feat/x 22.17.1" ]
+  echo v > "$(WT a/feat/x)/.nvmrc"
+  run "$SCRIPT" run ver
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"NODE_UNRESOLVED a/feat/x v"$'\n'* ]]
+  echo .x > "$(WT a/feat/x)/.nvmrc"
+  run "$SCRIPT" run ver
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"NODE_UNRESOLVED a/feat/x .x"$'\n'* ]]
+}
+
+@test ".nvmrc: without npm in PATH, a version nvm lacks is reported first" {
+  nvmrc_setup
+  export NVM_DIR="$TMP/nvm"
+  fake_node "$NVM_DIR/versions/node/v20.19.0/bin" 20.19.0
+  no_node_path
+  echo 99.1 > "$(WT a/feat/x)/.nvmrc"
+  PATH="$NO_NODE_PATH" run "$SCRIPT" run
+  [ "$status" -eq 13 ]
+  [ "$output" = "NO_NODE_VERSION a/feat/x 99.1" ]
 }
 
 # no_node_path: NO_NODE_PATH = PATH without the folders of the global node and npm. Skips the test when

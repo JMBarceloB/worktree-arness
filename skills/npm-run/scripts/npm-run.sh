@@ -23,7 +23,7 @@
 # Stdout, first word is the status:
 #   STARTED <repo>/<name> <script> <pid> <log>     running in the background
 #   FINISHED <repo>/<name> <script> <code> <log>   ended within the first second (exit 0 only if code 0); NPM_RUN_QUICK_TENTHS changes it
-#   NODE <repo>/<name> <version>                   the .nvmrc node runs, from nvm or the current one (before INSTALLED / STARTED / FINISHED)
+#   NODE <repo>/<name> <version>                   the .nvmrc node runs, from nvm or the current one (before CONFIRM_INSTALL / INSTALLED / STARTED / FINISHED)
 #   NODE_UNRESOLVED <repo>/<name> <alias>          .nvmrc alias not resolved (lts/*, node): the current node runs (same place)
 #   INSTALLED <repo>/<name> <log>                  dependencies installed (before STARTED)
 #   SCRIPT <name>                                  one per available script (scripts, NO_COMMAND,
@@ -223,21 +223,24 @@ node_dir() {
 # nor the current node has it (cmd_run stops with NO_NODE_VERSION after the script checks). Without nvm,
 # a version the current node does not match: a warning on stderr, and the current node runs.
 use_nvmrc() {
-  local file="$WT/.nvmrc" want found have home bom=$'\xef\xbb\xbf' tab=$'\t'
+  local file="$WT/.nvmrc" raw want found have home bom=$'\xef\xbb\xbf' tab=$'\t'
   NODE_LINE="" NODE_MISSING=""
   [ -f "$file" ] || return 0
-  # First non-empty line, without a UTF-8 BOM, a # comment, blanks or CR (Windows editors write them).
-  # awk reads all its input: an `exit` would kill tr with SIGPIPE on a big file (CODESTYLE, Pitfalls).
-  want="$(LC_ALL=C sed -e "s/^$bom//" -e 's/#.*//' "$file" | tr -d ' \t\r' | awk 'NF && !d { print; d=1 }')"
-  want="${want#v}"
+  # First field of the first non-empty line, without a UTF-8 BOM, a # comment or CR (Windows editors write
+  # them). awk reads all its input: an `exit` would kill tr with SIGPIPE on a big file (CODESTYLE, Pitfalls).
+  raw="$(LC_ALL=C sed -e "s/^$bom//" -e 's/#.*//' "$file" | tr -d '\r' | awk 'NF && !d { print $1; d=1 }')"
+  if [ -z "$raw" ]; then
+    echo "note: .nvmrc has no version; using the current node" >&2
+    return 0
+  fi
+  want="${raw#v}"
   # 22.x is 22, 22.17.x is 22.17.
   while :; do
     case "$want" in *.x|*.X) want="${want%.?}" ;; *) break ;; esac
   done
+  # Nothing left (v, .x): not a version, report it like an alias.
+  if [ -z "$want" ]; then want="$raw"; fi
   case "$want" in
-    "")
-      echo "note: .nvmrc has no version; using the current node" >&2
-      return 0 ;;
     .*|*.|*..*|*[!0-9.]*)
       echo "note: .nvmrc asks for '$want', an alias npm-run does not resolve; using the current node" >&2
       NODE_LINE="NODE_UNRESOLVED $SLUG $want"
@@ -313,6 +316,8 @@ cmd_run() {
 
   if [ ! -d "$WT/node_modules" ]; then
     if [ "$install" -eq 0 ]; then
+      # The .nvmrc line first: the install question must say which node it would use, or that it is not checked.
+      if [ -n "$NODE_LINE" ]; then echo "$NODE_LINE"; fi
       echo "CONFIRM_INSTALL $SLUG"
       exit "$EXIT_CONFIRM_INSTALL"
     fi
