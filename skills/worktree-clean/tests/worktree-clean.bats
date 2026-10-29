@@ -212,8 +212,10 @@ teardown() { chmod -R u+w "$TMP" 2>/dev/null || true; rm -rf "$TMP"; }
   [ -d "$ARNESS_ROOT/worktrees/a/feat/y" ]
 }
 
-# fake_git_remove <mode>: wrap git so `worktree remove` fails like Git for Windows ("Directory not empty").
-#   left-behind: git does unregister the worktree, but a file stays in its dir
+# fake_git_remove <mode>: wrap git so `worktree remove` leaves the dir like Git for Windows.
+#   left-behind: git does unregister the worktree, but a file stays in its dir ("Directory not empty")
+#   left-link: git unregisters the worktree and exits 0, but leaves node_modules/@s/pkg, a link to
+#              $TMP/outside (a junction in Git Bash), as Git for Windows does with npm's junctions
 #   still-listed: git does nothing, the worktree stays registered
 #   list-fails: like still-listed, and every later `worktree list` fails
 #   held: like left-behind, but the leftover cannot be deleted (no write permission on its folder)
@@ -232,6 +234,16 @@ for a in "\$@"; do
   fi
   [ "\$a" = remove ] || continue
   p="\${!#}"
+  if [ "$1" = left-link ]; then
+    "$real_git" "\$@" >/dev/null 2>&1 || exit
+    mkdir -p "\$p/node_modules/@s"
+    if command -v cygpath >/dev/null 2>&1; then
+      cmd //c mklink //J "\$(cygpath -w "\$p/node_modules/@s/pkg")" "\$(cygpath -w "$TMP/outside")" >/dev/null
+    else
+      ln -s "$TMP/outside" "\$p/node_modules/@s/pkg"
+    fi
+    exit 0
+  fi
   if [ "$1" = left-behind ] || [ "$1" = held ]; then "$real_git" "\$@" >/dev/null 2>&1; mkdir -p "\$p/node_modules/x"; echo y > "\$p/node_modules/x/f"; fi
   if [ "$1" = held ]; then chmod a-w "\$p/node_modules/x"; fi
   if [ "$1" = list-fails ]; then : > "$TMP/remove-tried"; fi
@@ -254,6 +266,38 @@ EOF
   [ ! -e "$ARNESS_ROOT/worktrees/a/feat" ]
   [ -d "$ARNESS_ROOT/worktrees/a" ]
   [ -z "$(git -C "$SRC/a" branch --list feat/x)" ]
+}
+
+@test "remove deletes what git leaves behind after a successful remove, never through a link" {
+  mk_repo a
+  mk_wt a feat/x
+  mkdir "$TMP/outside"
+  echo keep > "$TMP/outside/keep.txt"
+  fake_git_remove left-link
+  run "$SCRIPT" remove --source a feat/x
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"note: git left "*"/worktrees/a/feat/x behind"* ]]
+  [[ "$output" == *REMOVED*/worktrees/a/feat/x ]]
+  [ ! -e "$ARNESS_ROOT/worktrees/a/feat" ]
+  [ -d "$ARNESS_ROOT/worktrees/a" ]
+  [ -f "$TMP/outside/keep.txt" ]
+  [ -z "$(git -C "$SRC/a" branch --list feat/x)" ]
+}
+
+@test "remove deletes the junctions Git for Windows leaves in node_modules, not what they point to" {
+  if ! command -v cygpath >/dev/null 2>&1; then skip "needs Git Bash (junctions)"; fi
+  mk_repo a
+  mk_wt a feat/x
+  echo node_modules/ >> "$SRC/a/.git/info/exclude"
+  mkdir -p "$TMP/outside" "$ARNESS_ROOT/worktrees/a/feat/x/node_modules/@s"
+  echo keep > "$TMP/outside/keep.txt"
+  cmd //c mklink //J "$(cygpath -w "$ARNESS_ROOT/worktrees/a/feat/x/node_modules/@s/pkg")" \
+    "$(cygpath -w "$TMP/outside")" >/dev/null
+  run "$SCRIPT" remove --source a feat/x
+  [ "$status" -eq 0 ]
+  [[ "$output" == *REMOVED*/worktrees/a/feat/x ]]
+  [ ! -e "$ARNESS_ROOT/worktrees/a/feat" ]
+  [ -f "$TMP/outside/keep.txt" ]
 }
 
 @test "remove never deletes by hand a worktree that git still lists" {

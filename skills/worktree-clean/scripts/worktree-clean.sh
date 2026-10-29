@@ -24,8 +24,10 @@
 #   REMOVED <path>
 #   SKIPPED <path|name> <reason>   reason: invalid-name | not-a-worktree | git-failed | stop-failed |
 #                                  rm-failed | NOT_MERGED | DIRTY | UNKNOWN_BASE (these three need --force)
-#   If git unregisters a worktree but leaves part of its dir (Git for Windows: "Directory not empty"),
-#   the rest is deleted with rm -rf and a note goes to stderr. A worktree git still lists is skipped.
+#   If git unregisters a worktree but leaves part of its dir, the rest is deleted with rm -rf and a note
+#   goes to stderr. Git for Windows does that with exit 0 when the dir holds a junction (npm makes one in
+#   node_modules per workspace package), or stops with "Directory not empty". A worktree git still lists
+#   is skipped.
 #   rm-failed: git let the worktree go and its branch is deleted, but part of the dir is still in use;
 #   it is no longer a worktree, so the user can delete it once whatever holds it is closed.
 # Before a worktree is removed, the npm scripts npm-run started in it (dev servers, watchers) are stopped
@@ -260,8 +262,10 @@ cmd_list() {
   if [ -z "$out" ]; then echo "NONE"; else printf '%s' "$out"; fi
 }
 
-# Remove a worktree with git, then delete what git left of its dir. On a big node_modules Git for Windows can
-# unregister the worktree and stop with "Directory not empty"; rm -rf (MSYS too, long paths included) ends it.
+# Remove a worktree with git, then delete what git left of its dir. Git for Windows can unregister the worktree
+# and leave part of it: since 2.54 it neither enters nor deletes a junction, keeps every dir above one and
+# still exits 0; on a big node_modules it can also stop with "Directory not empty". rm -rf ends it: Git Bash
+# sees a junction as a link and deletes the link, never what it points to (long paths included).
 # A worktree git still lists is never deleted by hand. Args: repo_dir path
 # Returns 0 removed, 1 git kept it (git-failed), 2 git let it go but rm -rf could not finish (rm-failed).
 remove_worktree() {
@@ -269,7 +273,9 @@ remove_worktree() {
   [ -n "$path" ] || return 1
   if [ "$FORCE" -eq 1 ]; then force=(--force); fi
   # ${force[@]+...}: bash 3.2 with set -u fails on an empty array.
-  if git -C "$repo_dir" worktree remove ${force[@]+"${force[@]}"} "$path" >&2; then return 0; fi
+  if git -C "$repo_dir" worktree remove ${force[@]+"${force[@]}"} "$path" >&2 && [ ! -e "$path" ]; then
+    return 0
+  fi
   # If git cannot list its worktrees we cannot tell it let this one go: never delete by hand then.
   listed="$(git -C "$repo_dir" worktree list --porcelain)" || return 1
   # A here-string, not a pipe: grep -q stops at the first match, and under pipefail printf then dies of
