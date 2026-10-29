@@ -511,7 +511,7 @@ main() {
   local cmd="$1"
   shift
   case "$cmd" in
-    -h|--help) sed -n '2,50p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) awk 'NR > 1 && /^#/ { print; next } NR > 1 { exit }' "${BASH_SOURCE[0]}"; exit 0 ;;
     run|scripts|ps|stop|clean) ;;
     *) die "unknown command: $cmd" ;;
   esac
