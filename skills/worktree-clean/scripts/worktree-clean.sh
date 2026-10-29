@@ -269,7 +269,7 @@ remove_worktree() {
   [ -n "$path" ] || return 1
   if [ "$FORCE" -eq 1 ]; then force=(--force); fi
   # ${force[@]+...}: bash 3.2 with set -u fails on an empty array.
-  git -C "$repo_dir" worktree remove ${force[@]+"${force[@]}"} "$path" >&2 && return 0
+  if git -C "$repo_dir" worktree remove ${force[@]+"${force[@]}"} "$path" >&2; then return 0; fi
   # If git cannot list its worktrees we cannot tell it let this one go: never delete by hand then.
   listed="$(git -C "$repo_dir" worktree list --porcelain)" || return 1
   # A here-string, not a pipe: grep -q stops at the first match, and under pipefail printf then dies of
