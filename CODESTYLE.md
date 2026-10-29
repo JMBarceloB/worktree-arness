@@ -52,7 +52,7 @@ Each of these has broken a script here that looked fine.
 | `sed 's/[áé]/x/'`: in the C locale a multibyte class matches single bytes. | One literal substitution per character (`s/á/a/g; s/é/e/g`). |
 | `cmd > f.tmp && mv f.tmp f`: when `cmd` fails, `f.tmp` is left behind. | `trap 'rm -f "$tmp"' EXIT`, or remove it in the failure branch. |
 | Judging a bats run by `bats … \| tail -n N`: a `not ok` above the last lines goes unseen and the run looks green. | `bats … \| grep -c '^not ok'` (must be 0), or read the exit code. |
-| Comparing a path built in the shell with one git prints, in Git Bash on Windows: git gives `C:/Users/...` with the casing on disk, the shell gives `/c/Users/...` with the casing it was typed with, so the same folder does not match. | Convert with `cygpath -m` before comparing. When acting on a match (remove, write), use the path from git's own listing, never the one built in the shell, so a casing mismatch fails closed. |
+| Comparing a path built in the shell with one git prints, in Git Bash on Windows: git gives `C:/Users/...` with the casing on disk, the shell gives `/c/Users/...` with the casing it was typed with, so the same folder does not match. | Convert with `cygpath -m` before comparing: it fixes the drive form, not the casing, so a path typed with other casing still does not match. Treat no match as not found, and act (remove, write) only after an exact match, on git's path or on the one that matched it. |
 
 ## Skills
 
