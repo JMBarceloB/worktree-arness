@@ -776,9 +776,10 @@ mk_detached() {
   git_q -C "$ORIGIN" branch epic/X-1
   git clone -q "$ORIGIN" "$SRC/a" 2>/dev/null
   mk_detached a pr origin/epic/X-1
-  # The commit reaches epic/X-1 in origin by another path (another clone, a merge there), so this clone's
-  # origin/epic/X-1 is stale. A `git push origin` from the worktree would update it itself (worktrees share
-  # refs), unless the clone is single-branch (--depth).
+  # The commit reaches epic/X-1 in origin by another path (another clone, a merge commit there), so this
+  # clone's origin/epic/X-1 is stale. A `git push origin HEAD:epic/X-1` from the worktree would update it
+  # itself (worktrees share refs), unless the clone is single-branch (--depth). A squash or rebase merge is
+  # still not detected for a detached worktree: there is no branch to ask gh about.
   echo 2 > "$ARNESS_ROOT/worktrees/a/pr/g.txt"
   git_q -C "$ARNESS_ROOT/worktrees/a/pr" add g.txt; git_q -C "$ARNESS_ROOT/worktrees/a/pr" commit -q -m c2
   git_q -C "$ORIGIN" fetch -q "$ARNESS_ROOT/worktrees/a/pr" HEAD:refs/heads/epic/X-1
@@ -829,7 +830,21 @@ mk_detached() {
   [[ "$output" != *"warning:"* ]]
 }
 
-@test "a detached worktree based on HEAD is not fetched as a HEAD branch" {
+@test "a branch worktree based on HEAD lists with no note about a HEAD branch" {
+  ORIGIN="$TMP/origin"
+  git_q init -q "$ORIGIN"
+  echo 1 > "$ORIGIN/f.txt"; git_q -C "$ORIGIN" add f.txt; git_q -C "$ORIGIN" commit -q -m c1
+  git clone -q "$ORIGIN" "$SRC/a" 2>/dev/null
+  git_q -C "$SRC/a" worktree add -q -b w "$ARNESS_ROOT/worktrees/a/w" HEAD
+  git_q -C "$SRC/a" config branch.w.arness-base HEAD
+  run "$SCRIPT" list
+  [ "$status" -eq 0 ]
+  [ "$(col w 5)" = "EMPTY" ]
+  [[ "$output" != *"note:"* ]]
+  [[ "$output" != *"warning:"* ]]
+}
+
+@test "a detached worktree based on HEAD lists with no note about a HEAD branch" {
   ORIGIN="$TMP/origin"
   git_q init -q "$ORIGIN"
   echo 1 > "$ORIGIN/f.txt"; git_q -C "$ORIGIN" add f.txt; git_q -C "$ORIGIN" commit -q -m c1
@@ -837,6 +852,7 @@ mk_detached() {
   mk_detached a pr HEAD
   run "$SCRIPT" list
   [ "$status" -eq 0 ]
+  [ "$(col pr 5)" = "EMPTY" ]
   [[ "$output" != *"note:"* ]]
   [[ "$output" != *"warning:"* ]]
 }
