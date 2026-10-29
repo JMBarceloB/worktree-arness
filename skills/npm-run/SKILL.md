@@ -51,7 +51,7 @@ skills/npm-run/scripts/npm-run.sh clean [--worktree <repo>/<name>]     # CLEANED
 skills/npm-run/scripts/npm-run.sh scripts [--worktree <repo>/<name>]   # SCRIPT lines
 ```
 
-`stop` prints `STOPPED <slug> <script> <pid>` per process (TERM to its process group, KILL after 5 s; in Git Bash, first `taskkill /T /F` on its Windows process tree), or `NONE`. `STOP_FAILED <slug> <script> <pid>` (exit 14): taskkill could not end that tree and the process may still run; its pid is kept so `ps` still shows it. Show the `warning:` from stderr; do not retry in a loop. Ask before `stop --all` if the user did not say it.
+`stop` prints `STOPPED <slug> <script> <pid>` per process (TERM to its process group, KILL after 5 s; in Git Bash, first `taskkill /T /F` on its Windows process tree), or `NONE`. `STOP_FAILED <slug> <script> <pid>` (exit 14): taskkill could not end that tree and part of it may still run; its pid file is kept, so `stop` can be retried. Show the `warning:` from stderr; do not retry in a loop. Ask before `stop --all` if the user did not say it.
 
 Files live in `tmp/npm-run/<repo>/<name>/`. `stop` removes the pid and log of what it stops, plus the `install.log` and folders left empty. A script that ended by itself (`FINISHED`, `EXITED`) keeps its log, the only record of what happened. Read it first if it matters, then `clean` removes the logs and pids of everything that no longer runs and the empty folders (`CLEANED <slug> <file>` per file). It never touches what still runs.
 

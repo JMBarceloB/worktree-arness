@@ -360,7 +360,7 @@ cmd_stop() {
     if pid_alive "$pid"; then
       any=1
       if ! stop_pid "$pid"; then
-        # It may still run: keep its pid file, so stop can be retried and ps still shows it.
+        # Part of it may still run: keep its pid file, so stop can be retried.
         echo "STOP_FAILED $slug $script $pid"
         failed=1
         continue
