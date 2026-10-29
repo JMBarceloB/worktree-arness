@@ -1,7 +1,7 @@
 # Shared bats helpers. The tests in tests/ run against a throwaway copy of the repo; the skill tests
-# (skills/<name>/tests) load this file too, for fake_cygpath, and there REPO_ROOT is skills/<name>.
+# (skills/<name>/tests) load this file too, for fake_cygpath. REPO_ROOT is the repo root for both.
 
-REPO_ROOT="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # make_sandbox [dirname]: copy tracked-style sources into a temp dir, set ARNESS_ROOT.
 make_sandbox() {

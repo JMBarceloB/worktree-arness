@@ -67,6 +67,8 @@ setup() {
 teardown() {
   [ -n "${TMP:-}" ] || return 0
   ARNESS_ROOT="$TMP/root" "$SCRIPT" stop --all >/dev/null 2>&1 || true
+  # A node left alive by a failed native node test (Git Bash) would hold the whole run open.
+  if [ -n "${NODE_PID:-}" ]; then MSYS2_ARG_CONV_EXCL='*' taskkill /T /F /PID "$NODE_PID" >/dev/null 2>&1 || true; fi
   rm -rf "$TMP"
 }
 
@@ -254,7 +256,7 @@ EOF
 
 @test "stop ends a native node an MSYS shell keeps as its parent, also with MSYS_NO_PATHCONV=1" {
   [ -r "/proc/$$/winpid" ] || skip "only Git Bash (Windows) has /proc/<pid>/winpid"
-  local wt nodepid
+  local wt
   wt="$(WT a/feat/x)"
   # sh stays as the parent of node: the `exit 0` after it keeps sh from replacing itself with node.
   # A TERM to the group ends sh but not node; only taskkill /T ends both.
@@ -268,13 +270,13 @@ EOF
     if [ -s "$wt/node.pid" ]; then break; fi
     sleep 0.1
   done
-  nodepid="$(cat "$wt/node.pid")"
+  NODE_PID="$(cat "$wt/node.pid")"
 
   run env MSYS_NO_PATHCONV=1 "$SCRIPT" stop --worktree a/feat/x tree
   [ "$status" -eq 0 ]
   [[ "$output" == "STOPPED a/feat/x tree "* ]]
   # 128: no such process. 0 would mean node was still alive (it is ended here, then).
-  run env MSYS2_ARG_CONV_EXCL='*' taskkill /F /PID "$nodepid"
+  run env MSYS2_ARG_CONV_EXCL='*' taskkill /F /PID "$NODE_PID"
   [ "$status" -eq 128 ]
 }
 
