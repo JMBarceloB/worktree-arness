@@ -17,7 +17,7 @@ All logic is in `scripts/worktree-clean.sh` (in this skill's folder). Do not run
    ```bash
    skills/worktree-clean/scripts/worktree-clean.sh list
    ```
-   - `NONE`: tell the user there is nothing to clean. Done.
+   - `NONE`: tell the user there is nothing to clean. Done. But a `warning: cygpath cannot convert …; <repo> not listed` on stderr means that repo's worktrees were left out: say so instead.
    - `NO_SOURCE` (exit 4): no repo in `source/`. Done.
    - Otherwise one tab-separated row per worktree: `repo name branch base status ahead path`.
 2. Show a numbered markdown table: `#`, repo, name, base, status, ahead. When branch is `(detached)`, write the base as `detached: <base>` (e.g. `detached: origin/release/1.2`), so it reads as a branch checked out to look at, not a task. Status meaning:

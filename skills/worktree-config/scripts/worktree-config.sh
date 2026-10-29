@@ -20,7 +20,8 @@
 #   NOT_FOUND <path>         no such worktree of a repo in source/ (exit 4)
 #   NO_CONFIG <repo>         nothing in config/<repo>/; nothing done (exit 0)
 #   INSTALL_FAILED <code> <log>   install.sh failed; files were already copied (exit 7)
-# Exit codes: 0 ok, 2 invalid usage/input, 4 not found, 5 no worktree, 7 install failed, 13 some file skipped.
+# Exit codes: 0 ok, 2 invalid usage/input (or a path cygpath cannot convert), 4 not found, 5 no worktree,
+# 7 install failed, 13 some file skipped.
 set -euo pipefail
 
 EXIT_USAGE=2 EXIT_NOT_FOUND=4 EXIT_NO_WORKTREE=5 EXIT_INSTALL=7 EXIT_SKIPPED=13
