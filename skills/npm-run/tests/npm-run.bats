@@ -40,6 +40,15 @@ EOF
 WT() { echo "$ARNESS_ROOT/worktrees/$1"; }
 state() { echo "$ARNESS_ROOT/tmp/npm-run/$1"; }
 
+# dead_pid: the pid of a process that has already ended and been reaped, so nothing runs with it.
+dead_pid() {
+  local p
+  sh -c 'exit 0' &
+  p=$!
+  wait "$p" || true
+  echo "$p"
+}
+
 # group_pids <pgid>: the processes in that process group. Git Bash has no pgrep, but its ps prints the
 # PGID as the third column, after a status letter (S, I, O) in front of stopped or waiting processes.
 group_pids() {
@@ -331,9 +340,10 @@ EOF
 
 @test "ps reports EXITED for a dead pid and forgets it" {
   mkdir -p "$(state a/feat/x)"
-  echo 999999 > "$(state a/feat/x)/serve.pid"
+  dead="$(dead_pid)"
+  echo "$dead" > "$(state a/feat/x)/serve.pid"
   run "$SCRIPT" ps
-  [ "$output" = "EXITED a/feat/x serve 999999 $(state a/feat/x)/serve.log" ]
+  [ "$output" = "EXITED a/feat/x serve $dead $(state a/feat/x)/serve.log" ]
   run "$SCRIPT" ps
   [ "$output" = "NONE" ]
 }
@@ -377,18 +387,21 @@ EOF
   run "$SCRIPT" run ok
   [ "$status" -eq 0 ]
   [ -f "$(state a/feat/x)/ok.log" ]
+  [ "$(cat "$(state a/feat/x)/ok.code")" = 0 ]
   run "$SCRIPT" clean
   [ "$status" -eq 0 ]
-  [ "$output" = "CLEANED a/feat/x ok.log" ]
+  [ "${lines[0]}" = "CLEANED a/feat/x ok.code" ]
+  [ "${lines[1]}" = "CLEANED a/feat/x ok.log" ]
+  [ "${#lines[@]}" -eq 2 ]
   [ ! -e "$ARNESS_ROOT/tmp/npm-run" ]
 }
 
 @test "an EXITED script keeps its log until clean" {
   mkdir -p "$(state a/feat/x)"
-  echo 999999 > "$(state a/feat/x)/serve.pid"
+  echo "$(dead_pid)" > "$(state a/feat/x)/serve.pid"
   echo "it died" > "$(state a/feat/x)/serve.log"
   run "$SCRIPT" ps
-  [[ "$output" == "EXITED "* ]]
+  [[ "$output" == "EXITED "* ]] || false
   [ -f "$(state a/feat/x)/serve.log" ]
   run "$SCRIPT" clean
   [ "$output" = "CLEANED a/feat/x serve.log" ]
@@ -399,11 +412,11 @@ EOF
   pid="$(cat "$(state a/feat/x)/serve.pid")"
   echo log > "$(state a/feat/x)/install.log"
   echo old > "$(state a/feat/x)/ok.log"
-  echo 999999 > "$(state a/feat/x)/gone.pid"
+  echo "$(dead_pid)" > "$(state a/feat/x)/gone.pid"
   run "$SCRIPT" clean
   [ "$status" -eq 0 ]
-  [[ "$output" == *"CLEANED a/feat/x gone.pid"* ]]
-  [[ "$output" == *"CLEANED a/feat/x ok.log"* ]]
+  [[ "$output" == *"CLEANED a/feat/x gone.pid"* ]] || false
+  [[ "$output" == *"CLEANED a/feat/x ok.log"* ]] || false
   [ -f "$(state a/feat/x)/serve.pid" ]
   [ -f "$(state a/feat/x)/serve.log" ]
   [ -f "$(state a/feat/x)/install.log" ]
@@ -434,6 +447,438 @@ EOF
   [ "$status" -eq 2 ]
 }
 
+# --- wait and exit codes -------------------------------------------------------------
+
+# add_script <name> <command>: add a script to the worktree's package.json.
+add_script() {
+  (cd "$(WT a/feat/x)" && npm pkg set "scripts.$1=$2" >/dev/null)
+}
+
+@test "wait blocks until a slow script ends with 0: FINISHED 0, exit 0" {
+  add_script slow "sleep 2 && echo slow-done"
+  NPM_RUN_QUICK_TENTHS=1 run "$SCRIPT" run slow
+  [ "$status" -eq 0 ]
+  [[ "$output" == "STARTED a/feat/x slow "* ]] || false
+  run "$SCRIPT" wait --worktree a/feat/x slow
+  [ "$status" -eq 0 ]
+  [ "$output" = "FINISHED a/feat/x slow 0 $(state a/feat/x)/slow.log" ]
+  grep -q slow-done "$(state a/feat/x)/slow.log"
+}
+
+@test "wait on a slow script that fails gives FINISHED with its code, exit 8 and the log tail" {
+  add_script slowfail "sleep 2 && echo slow-boom && exit 3"
+  NPM_RUN_QUICK_TENTHS=1 run "$SCRIPT" run slowfail
+  [[ "$output" == "STARTED a/feat/x slowfail "* ]] || false
+  run "$SCRIPT" wait --worktree a/feat/x slowfail
+  [ "$status" -eq 8 ]
+  [ "${lines[0]}" = "FINISHED a/feat/x slowfail 3 $(state a/feat/x)/slowfail.log" ]
+  [[ "$output" == *"--- last 20 lines of $(state a/feat/x)/slowfail.log ---"* ]] || false
+  [[ "$output" == *slow-boom* ]] || false
+}
+
+@test "wait on a script that already ended answers at once with its code" {
+  run "$SCRIPT" run fail
+  [ "$status" -eq 8 ]
+  start="$(date +%s)"
+  run "$SCRIPT" wait fail
+  [ "$status" -eq 8 ]
+  [ "${lines[0]}" = "FINISHED a/feat/x fail 3 $(state a/feat/x)/fail.log" ]
+  [ "$(( $(date +%s) - start ))" -le 1 ]
+}
+
+@test "wait --timeout gives TIMEOUT and leaves the script running" {
+  "$SCRIPT" run serve >/dev/null
+  pid="$(cat "$(state a/feat/x)/serve.pid")"
+  run "$SCRIPT" wait --worktree a/feat/x serve --timeout 1
+  [ "$status" -eq 15 ]
+  [ "$output" = "TIMEOUT a/feat/x serve $pid $(state a/feat/x)/serve.log" ]
+  kill -0 "$pid"
+  [ ! -e "$(state a/feat/x)/serve.code" ]
+}
+
+@test "wait on a script never started there is NOT_STARTED; bad input exits 2" {
+  run "$SCRIPT" wait --worktree a/feat/x serve
+  [ "$status" -eq 16 ]
+  [ "$output" = "NOT_STARTED a/feat/x serve" ]
+  run "$SCRIPT" wait --worktree a/nope serve
+  [ "$status" -eq 4 ]
+  [ "$output" = "NOT_FOUND a/nope" ]
+  run "$SCRIPT" wait
+  [ "$status" -eq 2 ]
+  run "$SCRIPT" wait serve --timeout x
+  [ "$status" -eq 2 ]
+  run "$SCRIPT" wait ../serve
+  [ "$status" -eq 2 ]
+}
+
+@test "wait on a script that died without a code is NO_CODE" {
+  mkdir -p "$(state a/feat/x)"
+  echo "$(dead_pid)" > "$(state a/feat/x)/serve.pid"
+  echo "it died" > "$(state a/feat/x)/serve.log"
+  run "$SCRIPT" wait serve
+  [ "$status" -eq 17 ]
+  [ "$output" = "NO_CODE a/feat/x serve $(state a/feat/x)/serve.log" ]
+}
+
+@test "the exit code is saved after npm-run returned, and ps shows it in EXITED" {
+  add_script slowfail "sleep 2 && exit 3"
+  NPM_RUN_QUICK_TENTHS=1 run "$SCRIPT" run slowfail
+  [[ "$output" == "STARTED a/feat/x slowfail "* ]] || false
+  pid="$(cat "$(state a/feat/x)/slowfail.pid")"
+  for _ in $(seq 100); do
+    if [ -f "$(state a/feat/x)/slowfail.code" ]; then break; fi
+    sleep 0.1
+  done
+  [ "$(cat "$(state a/feat/x)/slowfail.code")" = 3 ]
+  sleep 0.5
+  run "$SCRIPT" ps
+  [ "$output" = "EXITED a/feat/x slowfail $pid $(state a/feat/x)/slowfail.log 3" ]
+}
+
+@test "a new run of a script forgets the code of the previous one" {
+  run "$SCRIPT" run fail
+  [ -f "$(state a/feat/x)/fail.code" ]
+  add_script fail "sleep 30"
+  run "$SCRIPT" run fail
+  [[ "$output" == "STARTED a/feat/x fail "* ]] || false
+  [ ! -e "$(state a/feat/x)/fail.code" ]
+}
+
+@test "clean removes the exit code files of what no longer runs" {
+  run "$SCRIPT" run fail
+  [ -f "$(state a/feat/x)/fail.code" ]
+  run "$SCRIPT" clean
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"CLEANED a/feat/x fail.code"* ]] || false
+  [ ! -e "$ARNESS_ROOT/tmp/npm-run" ]
+}
+
+@test "stop leaves no exit code behind, and wait then says NOT_STARTED" {
+  "$SCRIPT" run serve >/dev/null
+  pid="$(cat "$(state a/feat/x)/serve.pid")"
+  run "$SCRIPT" stop --worktree a/feat/x serve
+  [ "$status" -eq 0 ]
+  [ "$output" = "STOPPED a/feat/x serve $pid" ]
+  sleep 0.5
+  [ ! -e "$(state a/feat/x)/serve.code" ]
+  [ ! -e "$(state a/feat/x)/serve.code.tmp" ]
+  run "$SCRIPT" wait serve
+  [ "$status" -eq 16 ]
+  [ "$output" = "NOT_STARTED a/feat/x serve" ]
+}
+
+# wait_code <script>: wait up to 10 s for the wrapper to save that script's code, then for it to be gone.
+wait_code() {
+  for _ in $(seq 100); do
+    if [ -f "$(state a/feat/x)/$1.code" ]; then break; fi
+    sleep 0.1
+  done
+  sleep 0.5
+}
+
+@test "a child that ignores TERM keeps the script RUNNING, and stop ends it with KILL after 5 s" {
+  add_script stubborn "trap '' TERM; sleep 30"
+  "$SCRIPT" run stubborn >/dev/null
+  pid="$(cat "$(state a/feat/x)/stubborn.pid")"
+  sleep 0.5
+  kill -TERM -- "-$pid"
+  sleep 1
+  # The wrapper passed the TERM on and waits for npm, which waits for the child that ignores it.
+  run "$SCRIPT" ps
+  [ "$output" = "RUNNING a/feat/x stubborn $pid $(state a/feat/x)/stubborn.log" ]
+  [ ! -e "$(state a/feat/x)/stubborn.code" ]
+  start="$(date +%s)"
+  run "$SCRIPT" stop --worktree a/feat/x stubborn
+  [ "$status" -eq 0 ]
+  [ "$output" = "STOPPED a/feat/x stubborn $pid" ]
+  [ "$(( $(date +%s) - start ))" -ge 4 ]
+  sleep 0.3
+  [ -z "$(group_pids "$pid")" ]
+  [ ! -e "$(state a/feat/x)/stubborn.code" ]
+}
+
+@test "a running script with defunct in its worktree, name or args is RUNNING, waited and stopped" {
+  mk_wt a fix-defunct
+  (cd "$(WT a/fix-defunct)" && npm pkg set "scripts.defunct=sleep 30; true" >/dev/null)
+  run "$SCRIPT" run --worktree a/fix-defunct defunct -- --grep defunct
+  [[ "$output" == "STARTED a/fix-defunct defunct "* ]] || false
+  pid="$(cat "$(state a/fix-defunct)/defunct.pid")"
+  run "$SCRIPT" ps
+  [ "$output" = "RUNNING a/fix-defunct defunct $pid $(state a/fix-defunct)/defunct.log" ]
+  run "$SCRIPT" run --worktree a/fix-defunct defunct
+  [ "$status" -eq 9 ]
+  run "$SCRIPT" wait --worktree a/fix-defunct defunct --timeout 1
+  [ "$status" -eq 15 ]
+  [ "$output" = "TIMEOUT a/fix-defunct defunct $pid $(state a/fix-defunct)/defunct.log" ]
+  run "$SCRIPT" stop --worktree a/fix-defunct defunct
+  [ "$output" = "STOPPED a/fix-defunct defunct $pid" ]
+  sleep 0.3
+  [ -z "$(group_pids "$pid")" ]
+}
+
+# signal_wrapper_only <signal>: start serve, send <signal> to the saved pid only (the wrapper, not its
+# group), and check that the wrapper passed it on to npm, saved the code and reported it to wait.
+signal_wrapper_only() {
+  "$SCRIPT" run serve >/dev/null
+  pid="$(cat "$(state a/feat/x)/serve.pid")"
+  sleep 0.5
+  kill "-$1" "$pid"
+  run "$SCRIPT" wait serve --timeout 10
+  # The wrapper ended by itself (it exits right after saving the code); checked before the cleanup KILL.
+  wrapper_alive=1
+  for _ in $(seq 20); do
+    if ! kill -0 "$pid" 2>/dev/null; then wrapper_alive=0; break; fi
+    sleep 0.1
+  done
+  # Whatever the script left in the group must not outlive the test.
+  kill -KILL -- "-$pid" 2>/dev/null || true
+  [ "$wrapper_alive" -eq 0 ]
+  [ "$status" -eq 8 ]
+  [[ "${lines[0]}" == "FINISHED a/feat/x serve "* ]] || false
+  code="$(cat "$(state a/feat/x)/serve.code")"
+  [ "$code" -ne 0 ]
+  [ "${lines[0]}" = "FINISHED a/feat/x serve $code $(state a/feat/x)/serve.log" ]
+}
+
+@test "a TERM to the wrapper alone reaches npm, and its code is saved" {
+  signal_wrapper_only TERM
+}
+
+@test "an INT to the wrapper alone reaches npm, and its code is saved" {
+  signal_wrapper_only INT
+}
+
+@test "stop also removes a .code.tmp left behind" {
+  # Its wrapper is gone (a dead pid): nothing rewrites or renames the .code.tmp, only forget can remove it.
+  mkdir -p "$(state a/feat/x)"
+  dead_pid > "$(state a/feat/x)/serve.pid"
+  echo 0 > "$(state a/feat/x)/serve.code.tmp"
+  run "$SCRIPT" stop --worktree a/feat/x serve
+  [ "$status" -eq 0 ]
+  [ "$output" = "NONE" ]
+  [ ! -e "$(state a/feat/x)/serve.code.tmp" ]
+}
+
+@test "a run that stops early without npm also removes the old code" {
+  nvmrc_setup
+  export NVM_DIR="$TMP/nvm"
+  fake_node "$NVM_DIR/versions/node/v20.19.0/bin" 20.19.0
+  no_node_path
+  echo 99.1 > "$(WT a/feat/x)/.nvmrc"
+  mkdir -p "$(state a/feat/x)"
+  echo 3 > "$(state a/feat/x)/ver.code"
+  echo 3 > "$(state a/feat/x)/../x-other.code"
+  PATH="$NO_NODE_PATH" run "$SCRIPT" run ver
+  [ "$status" -eq 13 ]
+  [ "$output" = "NO_NODE_VERSION a/feat/x 99.1" ]
+  [ ! -e "$(state a/feat/x)/ver.code" ]
+  # An invalid script name never reaches rm.
+  PATH="$NO_NODE_PATH" run "$SCRIPT" run ../x-other
+  [ "$status" -eq 13 ]
+  [ -f "$(state a/feat/x)/../x-other.code" ]
+}
+
+@test "a run that fails with INVALID_PACKAGE_JSON (and UNKNOWN_SCRIPT) also removes the old code" {
+  mkdir -p "$(state a/feat/x)"
+  echo 0 > "$(state a/feat/x)/ok.code"
+  echo 0 > "$(state a/feat/x)/gone.code"
+  run "$SCRIPT" run gone
+  [ "$status" -eq 7 ]
+  [ ! -e "$(state a/feat/x)/gone.code" ]
+  cp "$(WT a/feat/x)/package.json" "$TMP/package.json"
+  echo 'not json' > "$(WT a/feat/x)/package.json"
+  run "$SCRIPT" run ok
+  [ "$status" -eq 6 ]
+  [ ! -e "$(state a/feat/x)/ok.code" ]
+  # wait no longer answers with the result of the run before.
+  cp "$TMP/package.json" "$(WT a/feat/x)/package.json"
+  run "$SCRIPT" wait ok
+  [ "$status" -ne 0 ]
+  [[ "$output" != FINISHED* ]] || false
+}
+
+@test "a code saved by the run before while this run starts is not taken as this run's result" {
+  add_script slow "sleep 2"
+  # An npm that, while run reads the scripts (after its first clear), plays the run before ending and
+  # saving code 7.
+  local real_npm
+  real_npm="$(command -v npm)"
+  mkdir -p "$TMP/npmbin" "$(state a/feat/x)"
+  printf '#!/usr/bin/env bash\nif [ "$1" = pkg ]; then echo 7 > "%s"; fi\nexec "%s" "$@"\n' \
+    "$(state a/feat/x)/slow.code" "$real_npm" > "$TMP/npmbin/npm"
+  chmod +x "$TMP/npmbin/npm"
+  PATH="$TMP/npmbin:$PATH" NPM_RUN_QUICK_TENTHS=1 run "$SCRIPT" run slow
+  [[ "$output" == "STARTED a/feat/x slow "* ]] || false
+  run "$SCRIPT" wait slow --timeout 10
+  [ "$status" -eq 0 ]
+  [ "$output" = "FINISHED a/feat/x slow 0 $(state a/feat/x)/slow.log" ]
+}
+
+@test "the wrapper saves npm's real code when a signal comes as npm ends, also with POSIXLY_CORRECT" {
+  mkdir -p "$TMP/sigbin"
+  # An npm that signals the wrapper (its parent) and ends at once: the wait it cuts short is waited again.
+  printf '#!/bin/sh\nkill -TERM $PPID\nexit 3\n' > "$TMP/sigbin/npm"
+  chmod +x "$TMP/sigbin/npm"
+  for _ in 1 2 3 4 5; do
+    rm -f "$TMP/x.code"
+    run env PATH="$TMP/sigbin:$PATH" bash -c \
+      'source "$1"; POSIXLY_CORRECT=1 "$BASH" -c "$WRAPPER" npm-run "$2" x' _ "$SCRIPT" "$TMP/x.code"
+    [ "$status" -eq 3 ]
+    [ "$(cat "$TMP/x.code")" = 3 ]
+  done
+}
+
+@test "a code saved by the run before is not left by a run that stops at CONFIRM_INSTALL" {
+  local real_npm
+  real_npm="$(command -v npm)"
+  mkdir -p "$TMP/npmbin" "$(state a/feat/x)"
+  printf '#!/usr/bin/env bash\nif [ "$1" = pkg ]; then echo 7 > "%s"; fi\nexec "%s" "$@"\n' \
+    "$(state a/feat/x)/ok.code" "$real_npm" > "$TMP/npmbin/npm"
+  chmod +x "$TMP/npmbin/npm"
+  rmdir "$(WT a/feat/x)/node_modules"
+  PATH="$TMP/npmbin:$PATH" run "$SCRIPT" run ok
+  [ "$status" -eq 11 ]
+  [ ! -e "$(state a/feat/x)/ok.code" ]
+}
+
+@test "the wrapper ends its wait loop on wait's result and switches the trap off before saving" {
+  run bash -c 'source "$1"; printf "%s\n" "$WRAPPER"' _ "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *'kill -0'* ]] || false
+  # posix mode (POSIXLY_CORRECT) would forget npm's status once a wait returned it.
+  [[ "$output" == 'set +o posix; '* ]] || false
+  # The forwarding trap is switched off between the wait loop and the save.
+  [[ "$output" == *'done; trap "" TERM INT; { echo'* ]] || false
+}
+
+@test "a run that stops early without npm keeps the code of a script that still runs" {
+  "$SCRIPT" run serve >/dev/null
+  echo 0 > "$(state a/feat/x)/serve.code"
+  nvmrc_setup
+  export NVM_DIR="$TMP/nvm"
+  fake_node "$NVM_DIR/versions/node/v20.19.0/bin" 20.19.0
+  no_node_path
+  echo 99.1 > "$(WT a/feat/x)/.nvmrc"
+  PATH="$NO_NODE_PATH" run "$SCRIPT" run serve
+  [ "$status" -eq 13 ]
+  [ -f "$(state a/feat/x)/serve.code" ]
+}
+
+@test "a new run removes the old code also when it stops before running" {
+  run "$SCRIPT" run fail
+  [ -f "$(state a/feat/x)/fail.code" ]
+  rmdir "$(WT a/feat/x)/node_modules"
+  run "$SCRIPT" run fail
+  [ "$status" -eq 11 ]
+  [ ! -e "$(state a/feat/x)/fail.code" ]
+}
+
+@test "a TERM from outside npm-run still saves the exit code" {
+  "$SCRIPT" run serve >/dev/null
+  pid="$(cat "$(state a/feat/x)/serve.pid")"
+  sleep 0.5
+  kill -TERM -- "-$pid"
+  run "$SCRIPT" wait serve --timeout 10
+  [ "$status" -eq 8 ]
+  [[ "${lines[0]}" == "FINISHED a/feat/x serve "* ]] || false
+  [ "$(cat "$(state a/feat/x)/serve.code")" -ne 0 ]
+}
+
+@test "a pid file with 1, 0 or a leading zero is never signalled: stop says NONE" {
+  for p in 1 0 01; do
+    mkdir -p "$(state a/feat/x)"
+    echo "$p" > "$(state a/feat/x)/serve.pid"
+    run "$SCRIPT" stop --all
+    [ "$status" -eq 0 ]
+    [ "$output" = "NONE" ]
+    [ ! -e "$(state a/feat/x)/serve.pid" ]
+  done
+  mkdir -p "$(state a/feat/x)"
+  echo 1 > "$(state a/feat/x)/serve.pid"
+  run "$SCRIPT" ps
+  [ "$output" = "EXITED a/feat/x serve - $(state a/feat/x)/serve.log" ]
+}
+
+@test "a pid reused by another process is taken as dead: ps says EXITED and stop leaves it alone" {
+  sleep 30 &
+  other=$!
+  mkdir -p "$(state a/feat/x)"
+  echo "$other" > "$(state a/feat/x)/serve.pid"
+  run "$SCRIPT" ps
+  [ "$output" = "EXITED a/feat/x serve $other $(state a/feat/x)/serve.log" ]
+  echo "$other" > "$(state a/feat/x)/serve.pid"
+  run "$SCRIPT" stop --all
+  [ "$output" = "NONE" ]
+  kill -0 "$other"
+  kill "$other"
+  wait "$other" 2>/dev/null || true
+}
+
+@test "the wrapper leaves no .code.tmp when it cannot save the code, and keeps npm's exit" {
+  mkdir -p "$TMP/fakebin"
+  printf '#!/bin/sh\nexit 3\n' > "$TMP/fakebin/npm"
+  printf '#!/bin/sh\nexit 1\n' > "$TMP/fakebin/mv"
+  chmod +x "$TMP/fakebin/npm" "$TMP/fakebin/mv"
+  run bash -c 'source "$1"; PATH="$2:$PATH" "$BASH" -c "$WRAPPER" npm-run "$3" x' _ "$SCRIPT" "$TMP/fakebin" "$TMP/x.code"
+  [ "$status" -eq 3 ]
+  [ ! -e "$TMP/x.code.tmp" ]
+  [ ! -e "$TMP/x.code" ]
+}
+
+@test "clean removes an orphan .code.tmp" {
+  mkdir -p "$(state a/feat/x)"
+  echo 0 > "$(state a/feat/x)/ok.code.tmp"
+  run "$SCRIPT" clean
+  [ "$status" -eq 0 ]
+  [ "$output" = "CLEANED a/feat/x ok.code.tmp" ]
+  [ ! -e "$ARNESS_ROOT/tmp/npm-run" ]
+}
+
+@test "wait, ps and stop do not crash on a pid file they cannot read" {
+  [ "$(id -u)" -ne 0 ] || skip "root reads any file"
+  mkdir -p "$(state a/feat/x)"
+  echo "$(dead_pid)" > "$(state a/feat/x)/serve.pid"
+  echo "it died" > "$(state a/feat/x)/serve.log"
+  chmod 000 "$(state a/feat/x)/serve.pid"
+  run "$SCRIPT" wait serve
+  [ "$status" -eq 17 ]
+  [ "$output" = "NO_CODE a/feat/x serve $(state a/feat/x)/serve.log" ]
+  run "$SCRIPT" ps
+  [ "$status" -eq 0 ]
+  [[ "$output" == "EXITED a/feat/x serve "* ]] || false
+  echo "$(dead_pid)" > "$(state a/feat/x)/other.pid"
+  chmod 000 "$(state a/feat/x)/other.pid"
+  run "$SCRIPT" stop --all
+  [ "$status" -eq 0 ]
+  [ "$output" = "NONE" ]
+}
+
+@test "stop of a script that ended by itself also removes its code" {
+  add_script slow "sleep 2"
+  NPM_RUN_QUICK_TENTHS=1 run "$SCRIPT" run slow
+  [[ "$output" == "STARTED a/feat/x slow "* ]] || false
+  wait_code slow
+  run "$SCRIPT" stop --worktree a/feat/x slow
+  [ "$status" -eq 0 ]
+  [ ! -e "$(state a/feat/x)/slow.code" ]
+}
+
+@test "clean keeps the .code of a script still running" {
+  "$SCRIPT" run serve >/dev/null
+  echo 0 > "$(state a/feat/x)/serve.code"
+  run "$SCRIPT" clean
+  [ -f "$(state a/feat/x)/serve.code" ]
+}
+
+@test "wait --timeout 0 waits with no limit" {
+  add_script slow "sleep 2"
+  NPM_RUN_QUICK_TENTHS=1 run "$SCRIPT" run slow
+  [[ "$output" == "STARTED a/feat/x slow "* ]] || false
+  run "$SCRIPT" wait slow --timeout 0
+  [ "$status" -eq 0 ]
+  [ "$output" = "FINISHED a/feat/x slow 0 $(state a/feat/x)/slow.log" ]
+}
+
 # --- usage ---------------------------------------------------------------------------
 
 @test "invalid usage exits 2; -h prints the header" {
@@ -445,10 +890,12 @@ EOF
   [ "$status" -eq 2 ]
   run "$SCRIPT" -h
   [ "$status" -eq 0 ]
-  [[ "$output" == *"Exit codes:"* ]]
-  [[ "$output" == *"14 stop failed"* ]]
-  [[ "$output" != *"set -euo"* ]]
-  [[ "$output" == *"13 node version of .nvmrc not installed"* ]]
+  [[ "$output" == *"Exit codes:"* ]] || false
+  [[ "$output" == *"14 stop failed"* ]] || false
+  [[ "$output" == *"15 wait timed out"* ]] || false
+  [[ "$output" == *"npm-run.sh wait "* ]] || false
+  [[ "$output" != *"set -euo"* ]] || false
+  [[ "$output" == *"13 node version of .nvmrc not installed"* ]] || false
 }
 
 # --- .nvmrc ------------------------------------------------------------------------

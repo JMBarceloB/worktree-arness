@@ -2,6 +2,7 @@
 # Run an npm script of a worktree in the background, and list, stop or clean up the ones it started.
 #
 # Usage: npm-run.sh run     [--worktree <repo>/<name>] [--install] <script> [-- <args>...]
+#        npm-run.sh wait    [--worktree <repo>/<name>] <script> [--timeout <seconds>]
 #        npm-run.sh scripts [--worktree <repo>/<name>]
 #        npm-run.sh ps
 #        npm-run.sh stop    [--worktree <repo>/<name>] [<script>] | --all
@@ -14,6 +15,15 @@
 # process group, so stop also ends its children (dev servers, watchers); in Git Bash, with taskkill /T.
 # Without node_modules it stops with CONFIRM_INSTALL; --install runs `npm ci` (with package-lock.json)
 # or `npm install` first. Logs and pids: <arness>/tmp/npm-run/<repo>/<name>/<script>.{log,pid}.
+# A bash wrapper leads the process group (its pid is the one saved): it runs npm, then writes npm's exit
+# code to <script>.code, also after npm-run itself returned. A new run removes the old .code first. The
+# wrapper passes TERM and INT on to npm and lives until npm ends, so the saved pid runs as long
+# as npm does. stop sends TERM to the group, waits up to 5 s for the wrapper, then KILL to the group; it
+# removes the .code the wrapper saved, so a stopped script leaves none.
+# Known limit: if npm dies by KILL and leaves a child alive, the wrapper exits and stop no longer sees that
+# child; end it by hand with `kill -- -<pid>` (the pid STARTED printed).
+# wait polls every second until <script>.code appears; default --timeout 540 s (under the 10 min an agent's
+# shell tool allows; 0 waits forever). On TIMEOUT the script keeps running: call wait again.
 # With an .nvmrc at the worktree root, install and run use that node version from nvm (NVM_DIR, else ~/.nvm or
 # ${XDG_CONFIG_HOME:-~/.config}/nvm) or nvm-windows (NVM_HOME), first in PATH for them only; 22 and 22.x pick
 # the highest 22.x installed. With nvm and the version missing: NO_NODE_VERSION; no nvm: a warning.
@@ -22,17 +32,22 @@
 #
 # Stdout, first word is the status:
 #   STARTED <repo>/<name> <script> <pid> <log>     running in the background
-#   FINISHED <repo>/<name> <script> <code> <log>   ended within the first second (exit 0 only if code 0); NPM_RUN_QUICK_TENTHS changes it
+#   FINISHED <repo>/<name> <script> <code> <log>   run: ended within the first second (NPM_RUN_QUICK_TENTHS changes it);
+#                                                  wait: it ended. Exit 0 only if code 0, else 8 and the last 20 log lines on stderr
+#   TIMEOUT <repo>/<name> <script> <pid> <log>     wait: still running after --timeout; it keeps running (exit 15)
+#   NOT_STARTED <repo>/<name> <script>             wait: not started there, or stopped or cleaned since (exit 16)
+#   NO_CODE <repo>/<name> <script> <log>           wait: ended without saving its code (KILL, older npm-run) (exit 17)
 #   NODE <repo>/<name> <version>                   the .nvmrc node runs, from nvm or the current one (before CONFIRM_INSTALL / INSTALLED / STARTED / FINISHED)
 #   NODE_UNRESOLVED <repo>/<name> <alias>          .nvmrc alias not resolved (lts/*, node): the current node runs (same place)
 #   INSTALLED <repo>/<name> <log>                  dependencies installed (before STARTED)
 #   SCRIPT <name>                                  one per available script (scripts, NO_COMMAND,
 #                                                  UNKNOWN_SCRIPT)
 #   RUNNING <repo>/<name> <script> <pid> <log>     ps: still running
-#   EXITED <repo>/<name> <script> <pid> <log>      ps: no longer running (its pid file is removed)
-#   STOPPED <repo>/<name> <script> <pid>           stop (its pid and log are removed)
+#   EXITED <repo>/<name> <script> <pid> <log> [<code>]  ps: no longer running (its pid file is removed); <code>
+#                                                  last, when it saved one
+#   STOPPED <repo>/<name> <script> <pid>           stop (its pid, log and code are removed)
 #   STOP_FAILED <repo>/<name> <script> <pid>       stop could not end its process tree; pid kept (exit 14)
-#   CLEANED <repo>/<name> <file>                   clean: a log or stale pid file removed
+#   CLEANED <repo>/<name> <file>                   clean: a log, code or stale pid file removed
 #   NONE                                           ps / stop / clean: nothing to show, stop or remove
 #   CHOOSE_WORKTREE <repo>/<name>...               several worktrees, none given (exit 10)
 #   NO_WORKTREE                                    no worktree at all (exit 4)
@@ -48,12 +63,28 @@
 #   NO_NPM                                         npm not found (exit 3)
 # Exit codes: 0 ok, 2 invalid usage, 3 no npm, 4 no worktree, 5 no command, 6 package.json,
 # 7 unknown script, 8 script failed at start, 9 already running, 10 choose worktree,
-# 11 confirm install, 12 install failed, 13 node version of .nvmrc not installed, 14 stop failed.
+# 11 confirm install, 12 install failed, 13 node version of .nvmrc not installed, 14 stop failed,
+# 15 wait timed out, 16 wait: not started, 17 wait: no exit code saved.
 set -euo pipefail
 
 EXIT_USAGE=2 EXIT_NO_NPM=3 EXIT_NO_WORKTREE=4 EXIT_NO_COMMAND=5 EXIT_PACKAGE=6 EXIT_UNKNOWN_SCRIPT=7
 EXIT_FAILED=8 EXIT_RUNNING=9 EXIT_CHOOSE=10 EXIT_CONFIRM_INSTALL=11 EXIT_INSTALL=12
-EXIT_NODE_VERSION=13 EXIT_STOP_FAILED=14
+EXIT_NODE_VERSION=13 EXIT_STOP_FAILED=14 EXIT_TIMEOUT=15 EXIT_NOT_STARTED=16 EXIT_NO_CODE=17
+WAIT_TIMEOUT=540
+
+# Leader of the script's process group. $1 is the code file; the rest are npm run's arguments. It starts
+# npm in the background (same group) and lives until npm ends: a TERM or INT only makes it pass a TERM on
+# to npm (a background job of a non-interactive shell ignores INT, so INT goes on as TERM) and wait again,
+# so a TERM npm ignores does not end it. HUP is ignored from nohup and cannot be trapped. Then it saves npm's
+# exit code (via a .tmp, so a reader never sees half a file; removed when the save fails) and exits with it.
+# Its command line has "npm run", so pid_alive knows it. The loop ends on the result of `wait`, never by
+# probing npm's pid (free once reaped): the trap sets s, so a wait cut short by a signal is waited again;
+# bash (3.2 and 5) keeps a reaped child's status, so that wait still gives npm's code; posix mode (from
+# POSIXLY_CORRECT) drops it after a wait that returned it, so it is switched off first. The trap goes off
+# right after the loop, before the save: a signal is forwarded to npm's pid after reaping it only in the few
+# commands between the last wait and that line (bash cannot close that window), and none cuts the save.
+# shellcheck disable=SC2016 # expanded by the wrapper bash, not here
+WRAPPER='set +o posix; c="$1"; shift; npm run "$@" & n=$!; trap "s=1; kill -TERM $n 2>/dev/null" TERM INT; while :; do s=0; wait "$n"; rc=$?; [ "$s" = 1 ] || break; done; trap "" TERM INT; { echo "$rc" > "$c.tmp" && mv -f "$c.tmp" "$c"; } || rm -f "$c.tmp"; exit "$rc"'
 
 die() { echo "error: $*" >&2; exit "$EXIT_USAGE"; }
 
@@ -160,17 +191,33 @@ print_scripts() {
   if [ -n "$SCRIPTS" ]; then printf '%s\n' "$SCRIPTS" | sed 's/^/SCRIPT /'; fi
 }
 
-# pid_alive <pid>: 0 if that process runs and is an npm we started (its process group leader).
+# valid_pid <pid>: 0 for a pid we may have saved: digits, no leading zero, not 0 or 1 (init). kill on -1
+# or -0 would reach every process or our own group.
+valid_pid() {
+  case "$1" in ""|0*|1|*[!0-9]*) return 1 ;; esac
+}
+
+# pid_alive <pid>: 0 if that process runs and is a leader we started: the wrapper, whose command line has
+# "npm run" (it lives as long as npm). A pid reused by another process is not. Neither is a wrapper left
+# as a zombie after npm ended: ps prints no arguments for it ([bash] <defunct>), so no npm. Never match
+# other words of the command line: it holds the worktree, the script and its arguments, whatever they are.
 pid_alive() {
-  case "$1" in ""|*[!0-9]*) return 1 ;; esac
+  valid_pid "$1" || return 1
   kill -0 "$1" 2>/dev/null || return 1
   case "$(proc_args "$1")" in *npm*) return 0 ;; esac
   return 1
 }
 
-# proc_args <pid>: its command line. ps first (Linux, macOS: an npm leader that is a zombie still shows as
-# [npm] <defunct>, so stop still ends its group); /proc when ps cannot (the ps of Git Bash has no -o, slim
-# images have no ps).
+# read_pid <file>: the pid saved in it, or nothing when it cannot be read (removed meanwhile by another
+# npm-run) or is not a valid pid.
+read_pid() {
+  local pid
+  pid="$(cat "$1" 2>/dev/null)" || return 0
+  if valid_pid "$pid"; then printf '%s\n' "$pid"; fi
+}
+
+# proc_args <pid>: its command line. ps first (Linux, macOS); /proc when ps cannot (the ps of Git Bash has
+# no -o, slim images have no ps).
 proc_args() {
   if ps -p "$1" -o args= 2>/dev/null; then return 0; fi
   if [ -r "/proc/$1/cmdline" ]; then tr '\0' ' ' 2>/dev/null < "/proc/$1/cmdline"; fi
@@ -282,6 +329,16 @@ use_nvmrc() {
   NODE_MISSING="$want"
 }
 
+# clear_old_code <script>: remove the code an earlier run of <script> saved, which would make wait answer at
+# once with an old result. Only for a valid script name (it becomes a file name) that does not run now: the
+# code of a running script is its own, saved when it ends.
+clear_old_code() {
+  local pid_file="$STATE/$1.pid"
+  validate_script "$1" || return 0
+  if [ -f "$pid_file" ] && pid_alive "$(read_pid "$pid_file")"; then return 0; fi
+  rm -f "$STATE/$1.code" "$STATE/$1.code.tmp"
+}
+
 # no_node_version: stop with NO_NODE_VERSION when use_nvmrc found that nvm lacks the .nvmrc version.
 no_node_version() {
   [ -n "$NODE_MISSING" ] || return 0
@@ -302,6 +359,9 @@ cmd_run() {
   done
 
   resolve_worktree "$want"
+  # Before any status below: every way this run ends (an error, a question) leaves no code of an earlier run
+  # for wait to answer with. Again right before the start, below.
+  if [ -n "$script" ]; then clear_old_code "$script"; fi
   # The .nvmrc node first in PATH, since npm may only be reachable through nvm. A version nvm lacks is
   # reported after the script checks (listing the scripts needs no node version) and before the install
   # question; first only when there is no npm to read the scripts with.
@@ -320,11 +380,15 @@ cmd_run() {
     exit "$EXIT_UNKNOWN_SCRIPT"
   fi
 
-  local pid_file="$STATE/$script.pid" log="$STATE/$script.log" pid
-  if [ -f "$pid_file" ] && pid="$(cat "$pid_file")" && pid_alive "$pid"; then
+  local pid_file="$STATE/$script.pid" log="$STATE/$script.log" code_file="$STATE/$script.code" pid
+  if [ -f "$pid_file" ] && pid="$(read_pid "$pid_file")" && pid_alive "$pid"; then
     echo "ALREADY_RUNNING $SLUG $script $pid"
     exit "$EXIT_RUNNING"
   fi
+  # Once more, now that the script is known not to run and before every status left (NO_NODE_VERSION,
+  # CONFIRM_INSTALL, INSTALL_FAILED, the start): a run before that was still ending at the first clear may
+  # have saved its code since.
+  rm -f "$code_file" "$code_file.tmp"
   no_node_version
 
   if [ ! -d "$WT/node_modules" ]; then
@@ -344,9 +408,9 @@ cmd_run() {
   # Job control gives the job its own process group (pgid = pid), so stop can end the whole tree.
   set -m
   if [ "${#args[@]}" -gt 0 ]; then
-    (cd "$WT" && exec nohup npm run "$script" -- "${args[@]}") > "$log" 2>&1 < /dev/null &
+    (cd "$WT" && exec nohup "$BASH" -c "$WRAPPER" npm-run "$code_file" "$script" -- "${args[@]}") > "$log" 2>&1 < /dev/null &
   else
-    (cd "$WT" && exec nohup npm run "$script") > "$log" 2>&1 < /dev/null &
+    (cd "$WT" && exec nohup "$BASH" -c "$WRAPPER" npm-run "$code_file" "$script") > "$log" 2>&1 < /dev/null &
   fi
   pid=$!
   set +m
@@ -371,6 +435,62 @@ cmd_run() {
   fi
   disown "$pid" 2>/dev/null || true
   echo "STARTED $SLUG $script $pid $log"
+}
+
+# read_code <file>: the exit code saved in <file>, or fails when there is none (missing or not a number).
+read_code() {
+  local code
+  [ -f "$1" ] || return 1
+  code="$(cat "$1" 2>/dev/null)" || return 1
+  case "$code" in ""|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$code"
+}
+
+# cmd_wait [--worktree <slug>] <script> [--timeout <seconds>]: block until that script ends and report its code.
+cmd_wait() {
+  local want="" script="" limit="$WAIT_TIMEOUT"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --worktree) [ $# -ge 2 ] || die "--worktree needs a value"; want="$2"; shift 2 ;;
+      --timeout)  [ $# -ge 2 ] || die "--timeout needs a value"; limit="$2"; shift 2 ;;
+      -*)         die "unknown option: $1" ;;
+      *)          [ -z "$script" ] || die "only one script allowed"; script="$1"; shift ;;
+    esac
+  done
+  [ -n "$script" ] || die "wait needs a script"
+  validate_script "$script" || die "invalid script: '$script'"
+  case "$limit" in ""|*[!0-9]*) die "invalid --timeout: '$limit' (seconds, 0 for none)" ;; esac
+  resolve_worktree "$want"
+
+  local pid_file="$STATE/$script.pid" log="$STATE/$script.log" code_file="$STATE/$script.code"
+  local pid code start="$SECONDS"
+  while :; do
+    if code="$(read_code "$code_file")"; then
+      echo "FINISHED $SLUG $script $code $log"
+      if [ "$code" -ne 0 ]; then
+        { echo "--- last 20 lines of $log ---"; tail -n 20 "$log" 2>/dev/null || true; } >&2
+        exit "$EXIT_FAILED"
+      fi
+      return 0
+    fi
+    pid=""
+    if [ -f "$pid_file" ]; then pid="$(read_pid "$pid_file")"; fi
+    if ! pid_alive "$pid"; then
+      # The wrapper writes the code before it exits: look once more, in case it ended just now.
+      if read_code "$code_file" >/dev/null; then continue; fi
+      if [ -n "$pid" ] || [ -f "$log" ]; then
+        echo "NO_CODE $SLUG $script $log"
+        exit "$EXIT_NO_CODE"
+      fi
+      echo "NOT_STARTED $SLUG $script"
+      exit "$EXIT_NOT_STARTED"
+    fi
+    if [ "$limit" -gt 0 ] && [ $((SECONDS - start)) -ge "$limit" ]; then
+      echo "TIMEOUT $SLUG $script $pid $log"
+      exit "$EXIT_TIMEOUT"
+    fi
+    sleep 1
+  done
 }
 
 cmd_scripts() {
@@ -398,16 +518,21 @@ each_pid_file() {
 
 cmd_ps() {
   [ $# -eq 0 ] || die "ps takes no arguments"
-  local slug script file pid any=0
+  local slug script file pid code any=0
   while IFS='	' read -r slug script file; do
     [ -n "$file" ] || continue
     any=1
-    pid="$(cat "$file")"
+    pid="$(read_pid "$file")"
     if pid_alive "$pid"; then
       echo "RUNNING $slug $script $pid ${file%.pid}.log"
     else
       rm -f "$file"
-      echo "EXITED $slug $script $pid ${file%.pid}.log"
+      # The code goes last, so the fields before it keep their place for whoever parses them.
+      if code="$(read_code "${file%.pid}.code")"; then
+        echo "EXITED $slug $script ${pid:--} ${file%.pid}.log $code"
+      else
+        echo "EXITED $slug $script ${pid:--} ${file%.pid}.log"
+      fi
     fi
   done < <(each_pid_file)
   [ "$any" -eq 1 ] || echo "NONE"
@@ -423,12 +548,12 @@ prune_dirs() {
   done
 }
 
-# forget <pid file>: remove it and its log; when nothing else runs in that worktree, also its install.log
-# and the folders left empty.
+# forget <pid file>: remove it, its log and code; when nothing else runs in that worktree, also its
+# install.log and the folders left empty.
 forget() {
   local file="$1" dir
   dir="$(dirname "$file")"
-  rm -f "$file" "${file%.pid}.log"
+  rm -f "$file" "${file%.pid}.log" "${file%.pid}.code" "${file%.pid}.code.tmp"
   if ! ls "$dir"/*.pid >/dev/null 2>&1; then rm -f "$dir/install.log"; fi
   prune_dirs "$dir"
 }
@@ -449,6 +574,8 @@ stop_pid() {
     fi
   fi
   kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+  # The wrapper lives until npm ends, and npm until its script ends: a child that ignores TERM keeps the
+  # leader alive, and gets the KILL to the group.
   for _ in $(seq 50); do
     kill -0 "$pid" 2>/dev/null || return 0
     sleep 0.1
@@ -479,7 +606,7 @@ cmd_stop() {
     [ -n "$file" ] || continue
     [ -z "$want" ] || [ "$slug" = "$want" ] || continue
     [ -z "$only" ] || [ "$script" = "$only" ] || continue
-    pid="$(cat "$file")"
+    pid="$(read_pid "$file")"
     if pid_alive "$pid"; then
       any=1
       if ! stop_pid "$pid"; then
@@ -515,35 +642,39 @@ cmd_clean() {
     [ -z "$want" ] || [ "$slug" = "$want" ] || continue
     dir="$(dirname "$f")"
     case "$f" in
-      *.pid) pid="$(cat "$f")"; if pid_alive "$pid"; then continue; fi ;;
+      *.pid) pid="$(read_pid "$f")"; if pid_alive "$pid"; then continue; fi ;;
       *.log)
         if [ "$(basename "$f")" = install.log ]; then
           live=0
           for p in "$dir"/*.pid; do
-            if [ -f "$p" ] && pid_alive "$(cat "$p")"; then live=1; fi
+            if [ -f "$p" ] && pid_alive "$(read_pid "$p")"; then live=1; fi
           done
           [ "$live" -eq 0 ] || continue
-        elif [ -f "${f%.log}.pid" ] && pid_alive "$(cat "${f%.log}.pid")"; then
+        elif [ -f "${f%.log}.pid" ] && pid_alive "$(read_pid "${f%.log}.pid")"; then
           continue
         fi ;;
+      *.code|*.code.tmp)
+        p="${f%.tmp}"
+        if [ -f "${p%.code}.pid" ] && pid_alive "$(read_pid "${p%.code}.pid")"; then continue; fi ;;
       *) continue ;;
     esac
     rm -f "$f"
     echo "CLEANED $slug $(basename "$f")"
     any=1
     prune_dirs "$dir"
-  done < <(find "$base" -type f \( -name '*.pid' -o -name '*.log' \) | LC_ALL=C sort)
+  done < <(find "$base" -type f \( -name '*.pid' -o -name '*.log' -o -name '*.code' -o -name '*.code.tmp' \) \
+    | LC_ALL=C sort)
   [ -n "$want" ] || prune_dirs "$base"
   [ "$any" -eq 1 ] || echo "NONE"
 }
 
 main() {
-  [ $# -gt 0 ] || die "missing command: run, scripts, ps, stop or clean (-h for help)"
+  [ $# -gt 0 ] || die "missing command: run, wait, scripts, ps, stop or clean (-h for help)"
   local cmd="$1"
   shift
   case "$cmd" in
     -h|--help) awk 'NR > 1 && /^#/ { print; next } NR > 1 { exit }' "${BASH_SOURCE[0]}"; exit 0 ;;
-    run|scripts|ps|stop|clean) ;;
+    run|wait|scripts|ps|stop|clean) ;;
     *) die "unknown command: $cmd" ;;
   esac
   # Only run and scripts call npm; run checks it itself, after putting the .nvmrc node first in PATH.
@@ -553,6 +684,7 @@ main() {
   ROOT="$(cd -P "$ROOT" && pwd -P)"   # git reports physical paths
   case "$cmd" in
     run)     cmd_run "$@" ;;
+    wait)    cmd_wait "$@" ;;
     scripts) cmd_scripts "$@" ;;
     ps)      cmd_ps "$@" ;;
     stop)    cmd_stop "$@" ;;
