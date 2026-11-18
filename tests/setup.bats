@@ -7,27 +7,27 @@ teardown() { cleanup_sandbox; }
 @test "no args fails and lists available providers" {
   run bash "$SANDBOX/setup.sh"
   [ "$status" -eq 2 ]
-  [[ "$output" == *"--provider is required"* ]]
-  [[ "$output" == *"claude"* && "$output" == *"codex"* && "$output" == *"opencode"* ]]
-  [ ! -e "$SANDBOX/.claude" ] && [ ! -e "$SANDBOX/.agents" ]
+  [[ "$output" == *"--provider is required"* ]] || false
+  [[ "$output" == *"claude"* && "$output" == *"codex"* && "$output" == *"opencode"* ]] || false
+  [ ! -e "$SANDBOX/.claude" ] && [ ! -e "$SANDBOX/.agents" ] || false
 }
 
 @test "--help prints usage and exits 0" {
   run bash "$SANDBOX/setup.sh" --help
   [ "$status" -eq 0 ]
-  [[ "$output" == *"Usage:"* ]]
+  [[ "$output" == *"Usage:"* ]] || false
 }
 
 @test "auto with no CLIs installed fails with usage" {
   run env PATH="/usr/bin:/bin" bash "$SANDBOX/setup.sh" --provider auto
   [ "$status" -eq 1 ]
-  [[ "$output" == *"no installed provider"* ]]
+  [[ "$output" == *"no installed provider"* ]] || false
 }
 
 @test "unknown provider is rejected" {
   run bash "$SANDBOX/setup.sh" --provider nope
   [ "$status" -eq 2 ]
-  [[ "$output" == *"unknown provider"* && "$output" == *"Usage:"* ]]
+  [[ "$output" == *"unknown provider"* && "$output" == *"Usage:"* ]] || false
 }
 
 @test "unknown argument is rejected" {
@@ -49,8 +49,8 @@ teardown() { cleanup_sandbox; }
 @test "claude provider creates skills, agents, settings, CLAUDE.md" {
   run bash "$SANDBOX/setup.sh" --provider claude
   [ "$status" -eq 0 ]
-  [ -d "$SANDBOX/.claude/skills" ] && [ -L "$SANDBOX/.claude/skills" ]
-  [ -d "$SANDBOX/.claude/agents" ] && [ -L "$SANDBOX/.claude/agents" ]
+  [ -d "$SANDBOX/.claude/skills" ] && [ -L "$SANDBOX/.claude/skills" ] || false
+  [ -d "$SANDBOX/.claude/agents" ] && [ -L "$SANDBOX/.claude/agents" ] || false
   [ -s "$SANDBOX/.claude/settings.json" ]
   [ -s "$SANDBOX/CLAUDE.md" ]
   [ ! -e "$SANDBOX/.agents" ]
@@ -59,14 +59,14 @@ teardown() { cleanup_sandbox; }
 @test "codex and opencode link .agents/skills" {
   run bash "$SANDBOX/setup.sh" --provider codex,opencode
   [ "$status" -eq 0 ]
-  [ -L "$SANDBOX/.agents/skills" ] && [ -d "$SANDBOX/.agents/skills" ]
+  [ -L "$SANDBOX/.agents/skills" ] && [ -d "$SANDBOX/.agents/skills" ] || false
   [ ! -e "$SANDBOX/.claude" ]
 }
 
 @test "all runs every provider" {
   run bash "$SANDBOX/setup.sh" --provider all
   [ "$status" -eq 0 ]
-  [[ "$output" == *"==> claude"* && "$output" == *"==> codex"* && "$output" == *"==> opencode"* ]]
+  [[ "$output" == *"==> claude"* && "$output" == *"==> codex"* && "$output" == *"==> opencode"* ]] || false
 }
 
 @test "auto selects only installed CLIs" {
@@ -74,8 +74,8 @@ teardown() { cleanup_sandbox; }
   printf '#!/bin/sh\n' > "$SANDBOX/fakebin/codex"; chmod +x "$SANDBOX/fakebin/codex"
   run env PATH="$SANDBOX/fakebin:/usr/bin:/bin" bash "$SANDBOX/setup.sh" --provider auto
   [ "$status" -eq 0 ]
-  [[ "$output" == *"==> codex"* ]]
-  [[ "$output" != *"==> claude"* ]]
+  [[ "$output" == *"==> codex"* ]] || false
+  [[ "$output" != *"==> claude"* ]] || false
 }
 
 @test "running twice gives identical result" {

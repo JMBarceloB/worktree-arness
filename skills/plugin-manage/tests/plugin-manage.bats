@@ -68,7 +68,7 @@ add_demo() { "$SCRIPT" apply add --commit "$(origin_head)" "$@" "$URL" >/dev/nul
            "UNINSTALL $UNINSTALL_CMD"; do
     printf '%s\n' "$output" | grep -qxF -- "$l" || { echo "missing: $l"; false; }
   done
-  [ ! -e "$SANDBOX/plugins/demo" ] && [ ! -L "$SANDBOX/skills/demo-hello" ] && [ ! -e "$SANDBOX/plugins/.demo.state" ]
+  [ ! -e "$SANDBOX/plugins/demo" ] && [ ! -L "$SANDBOX/skills/demo-hello" ] && [ ! -e "$SANDBOX/plugins/.demo.state" ] || false
   [ -z "$(ls -A "$SANDBOX/plugins")" ]
 }
 
@@ -85,7 +85,7 @@ add_demo() { "$SCRIPT" apply add --commit "$(origin_head)" "$@" "$URL" >/dev/nul
 @test "apply add refuses to run without the full --commit from a plan" {
   run "$SCRIPT" apply add "$URL"
   [ "$status" -eq 2 ]
-  [[ "$output" == *"needs --commit"* ]]
+  [[ "$output" == *"needs --commit"* ]] || false
   run "$SCRIPT" apply add --commit "$(origin_head | cut -c1-7)" "$URL"
   [ "$status" -eq 2 ]
   [ ! -e "$SANDBOX/plugins/demo" ]
@@ -94,20 +94,20 @@ add_demo() { "$SCRIPT" apply add --commit "$(origin_head)" "$@" "$URL" >/dev/nul
 @test "the plan warns when an existing opencode.json does not gate apply" {
   echo '{"permission":{"bash":{"skills/*/scripts/*.sh *":"allow"}}}' > "$SANDBOX/opencode.json"
   run "$SCRIPT" add "$URL"
-  [[ "$output" == *"OPENCODE_UNGATED opencode.json"* ]]
+  [[ "$output" == *"OPENCODE_UNGATED opencode.json"* ]] || false
   cp "$SANDBOX/providers/opencode/opencode.json" "$SANDBOX/opencode.json"
   run "$SCRIPT" add "$URL"
-  [[ "$output" != *"OPENCODE_UNGATED"* ]]
+  [[ "$output" != *"OPENCODE_UNGATED"* ]] || false
 }
 
 @test "opencode setup warns about an existing opencode.json that does not gate apply" {
   echo '{"model":"x"}' > "$SANDBOX/opencode.json"
   run bash "$SANDBOX/setup.sh" --provider opencode
   [ "$status" -eq 0 ]
-  [[ "$output" == *"lets OpenCode run plugin-manage.sh apply without asking"* ]]
+  [[ "$output" == *"lets OpenCode run plugin-manage.sh apply without asking"* ]] || false
   rm "$SANDBOX/opencode.json"
   run bash "$SANDBOX/setup.sh" --provider opencode
-  [[ "$output" != *"without asking"* ]]
+  [[ "$output" != *"without asking"* ]] || false
 }
 
 @test "a command the plugin provides must not exist before it is installed" {
@@ -123,7 +123,7 @@ add_demo() { "$SCRIPT" apply add --commit "$(origin_head)" "$@" "$URL" >/dev/nul
   run "$SCRIPT" apply add --commit "$(origin_head)" "$URL"
   [ "$status" -eq 13 ]
   [ "$(last_line)" = "INSTALL_FAILED demo" ]
-  [[ "$output" == *"did not provide the command demo-tool"* ]]
+  [[ "$output" == *"did not provide the command demo-tool"* ]] || false
 }
 
 @test "apply add clones, links, records the state and runs install" {
@@ -135,14 +135,14 @@ add_demo() { "$SCRIPT" apply add --commit "$(origin_head)" "$@" "$URL" >/dev/nul
   [ -f "$SANDBOX/plugins/demo/installed.flag" ]
   [ "$(git -C "$SANDBOX/plugins/demo" rev-parse HEAD)" = "$(origin_head)" ]
   state | grep -qx "commit=$(origin_head)"
-  state | grep -qx 'ref=main' && state | grep -qx 'kind=branch' && state | grep -qx 'status=ok'
-  [[ "$output" == *"MANUAL opencode bash demo-tool *"* ]]
-  [[ "$output" == *"MANUAL opencode skill demo-hello"* ]]
+  state | grep -qx 'ref=main' && state | grep -qx 'kind=branch' && state | grep -qx 'status=ok' || false
+  [[ "$output" == *"MANUAL opencode bash demo-tool *"* ]] || false
+  [[ "$output" == *"MANUAL opencode skill demo-hello"* ]] || false
 }
 
 @test "apply add renders the plugin's Claude rules when claude is set up" {
   bash "$SANDBOX/setup.sh" --provider claude >/dev/null
-  ! grep -qF 'demo' "$SANDBOX/.claude/settings.json"
+  ! grep -qF 'demo' "$SANDBOX/.claude/settings.json" || false
   add_demo
   grep -qF '"Skill(demo-hello)",' "$SANDBOX/.claude/settings.json"
   grep -qF '"Bash(demo-tool *)",' "$SANDBOX/.claude/settings.json"
@@ -153,10 +153,10 @@ add_demo() { "$SCRIPT" apply add --commit "$(origin_head)" "$@" "$URL" >/dev/nul
   bash "$SANDBOX/setup.sh" --provider claude >/dev/null
   # A freshly rendered file has no hand edits, also with a plugin installed.
   run "$SCRIPT" add "$URL"
-  [[ "$output" != *DROPPED_SETTING* ]]
+  [[ "$output" != *DROPPED_SETTING* ]] || false
   add_demo
   run "$SCRIPT" remove demo
-  [[ "$output" != *DROPPED_SETTING* ]]
+  [[ "$output" != *DROPPED_SETTING* ]] || false
   # Two rules and a key added by hand, as a person editing the generated file would.
   awk '{ print } /"allow": \[/ { print "      \"Bash(gh pr review:*)\","; print "      \"Skill(my-private)\"," }
        /"autoMemoryEnabled"/ { print "  \"model\": \"opus\"," }' "$SANDBOX/.claude/settings.json" > "$BATS_TEST_TMPDIR/s"
@@ -168,7 +168,7 @@ add_demo() { "$SCRIPT" apply add --commit "$(origin_head)" "$@" "$URL" >/dev/nul
   printf '%s\n' "$output" | grep -qxF 'DROPPED_SETTING "model": "opus"'
   [ "$(printf '%s\n' "$output" | grep -c '^DROPPED_SETTING')" -eq 3 ]
   # The plugin's own rules are not hand edits; update lists the same lines.
-  [[ "$output" != *'DROPPED_SETTING "Skill(demo-hello)"'* ]]
+  [[ "$output" != *'DROPPED_SETTING "Skill(demo-hello)"'* ]] || false
   echo x >> "$ORIGIN/README.md"; commit_origin "c2"
   run "$SCRIPT" update demo
   [ "$status" -eq 20 ]
@@ -183,7 +183,7 @@ add_demo() { "$SCRIPT" apply add --commit "$(origin_head)" "$@" "$URL" >/dev/nul
   printf '%s\n' "$output" | grep -qxF 'DROPPED_SETTING ]'
   # apply does lose them: that is what the plan warns about.
   "$SCRIPT" apply update --commit "$(origin_head)" --ref main demo >/dev/null 2>&1
-  ! grep -qF 'gh pr review' "$SANDBOX/.claude/settings.json"
+  ! grep -qF 'gh pr review' "$SANDBOX/.claude/settings.json" || false
 }
 
 @test "apply add --ref installs a tag and records it" {
@@ -193,14 +193,14 @@ add_demo() { "$SCRIPT" apply add --commit "$(origin_head)" "$@" "$URL" >/dev/nul
   run "$SCRIPT" apply add --commit "$(git -C "$ORIGIN" rev-parse v0.1.0)" --ref v0.1.0 "$URL"
   [ "$status" -eq 0 ]
   grep -qx 'version=0.1.0' "$SANDBOX/plugins/demo/arness-plugin.conf"
-  state | grep -qx 'ref=v0.1.0' && state | grep -qx 'kind=tag'
+  state | grep -qx 'ref=v0.1.0' && state | grep -qx 'kind=tag' || false
 }
 
 @test "apply add with a commit other than the plan's is a MISMATCH" {
   zeros=0000000000000000000000000000000000000000
   run "$SCRIPT" apply add --commit "$zeros" "$URL"
   [ "$status" -eq 14 ]
-  [[ "$(last_line)" == "MISMATCH $zeros "* ]]
+  [[ "$(last_line)" == "MISMATCH $zeros "* ]] || false
   [ ! -e "$SANDBOX/plugins/demo" ]
 }
 
@@ -249,14 +249,14 @@ add_demo() { "$SCRIPT" apply add --commit "$(origin_head)" "$@" "$URL" >/dev/nul
   [ "$(last_line)" = "INSTALL_FAILED demo" ]
   [ -L "$SANDBOX/skills/demo-hello" ]
   run "$SCRIPT" list
-  [[ "$output" == "INSTALLED demo 0.1.0 "*" main INSTALL_FAILED 1/1 1/1" ]]
+  [[ "$output" == "INSTALLED demo 0.1.0 "*" main INSTALL_FAILED 1/1 1/1" ]] || false
 }
 
 @test "install runs without the script's git and arness settings" {
   edit_conf 's|^install=|install=env > env.txt \&\& |'
   commit_origin "env"
   add_demo
-  ! grep -qE '^(ARNESS_ROOT|GIT_ALLOW_PROTOCOL|GIT_TERMINAL_PROMPT)=' "$SANDBOX/plugins/demo/env.txt"
+  ! grep -qE '^(ARNESS_ROOT|GIT_ALLOW_PROTOCOL|GIT_TERMINAL_PROMPT)=' "$SANDBOX/plugins/demo/env.txt" || false
 }
 
 @test "add rejects invalid URLs, plain http included" {
@@ -288,20 +288,20 @@ check_with() {
 
 @test "check rejects unknown, repeated and malformed lines with their number" {
   check_with 'colour=blue'
-  [ "$status" -eq 4 ] && [ "$output" = "BAD_MANIFEST line 14: unknown key colour" ]
+  [ "$status" -eq 4 ] && [ "$output" = "BAD_MANIFEST line 14: unknown key colour" ] || false
   check_with 'name=other'
-  [ "$status" -eq 4 ] && [ "$output" = "BAD_MANIFEST line 14: duplicate key name" ]
+  [ "$status" -eq 4 ] && [ "$output" = "BAD_MANIFEST line 14: duplicate key name" ] || false
   check_with 'just words'
-  [ "$status" -eq 4 ] && [ "$output" = "BAD_MANIFEST line 14: not KEY=value" ]
+  [ "$status" -eq 4 ] && [ "$output" = "BAD_MANIFEST line 14: not KEY=value" ] || false
 }
 
 @test "check rejects a missing manifest and an unsupported contract" {
   rm "$ORIGIN/arness-plugin.conf"
   run "$SCRIPT" check "$ORIGIN"
-  [ "$status" -eq 4 ] && [ "$output" = "BAD_MANIFEST missing arness-plugin.conf" ]
+  [ "$status" -eq 4 ] && [ "$output" = "BAD_MANIFEST missing arness-plugin.conf" ] || false
   write_conf; edit_conf 's/^arness=.*/arness=2/'
   run "$SCRIPT" check "$ORIGIN"
-  [ "$status" -eq 4 ] && [ "$output" = "ARNESS_VERSION 2" ]
+  [ "$status" -eq 4 ] && [ "$output" = "ARNESS_VERSION 2" ] || false
 }
 
 @test "check accepts rules for a provided command and none for a required one" {
@@ -312,7 +312,7 @@ check_with() {
   write_conf; edit_conf 's/^requires=.*/requires=git true/'
   printf '%s\n' 'allow.claude=Bash(true --version)' >> "$ORIGIN/arness-plugin.conf"
   run "$SCRIPT" check "$ORIGIN"
-  [ "$status" -eq 4 ] && [ "$output" = "BAD_RULE claude Bash(true --version): true is not in provides" ]
+  [ "$status" -eq 4 ] && [ "$output" = "BAD_RULE claude Bash(true --version): true is not in provides" ] || false
 }
 
 @test "check rejects every rule outside the allowed shapes" {
@@ -322,7 +322,7 @@ check_with() {
               'allow.opencode=*' 'allow.opencode=demo-tool && rm *'; do
     check_with "$rule"
     [ "$status" -eq 4 ] || { echo "accepted: $rule"; false; }
-    [[ "$output" == "BAD_RULE "* ]]
+    [[ "$output" == "BAD_RULE "* ]] || false
   done
 }
 
@@ -340,16 +340,16 @@ check_with() {
   done
   write_conf; edit_conf 's/^provides=.*/provides=python3/'
   run "$SCRIPT" check "$ORIGIN"
-  [ "$status" -eq 4 ] && [ "$output" = "BAD_MANIFEST provides: python3 runs arbitrary code" ]
+  [ "$status" -eq 4 ] && [ "$output" = "BAD_MANIFEST provides: python3 runs arbitrary code" ] || false
 }
 
 @test "check rejects a rule for a command the plugin does not provide, required ones included" {
   check_with 'allow.opencode=rm *'
-  [ "$status" -eq 4 ] && [ "$output" = "BAD_RULE opencode rm *: rm is not in provides" ]
+  [ "$status" -eq 4 ] && [ "$output" = "BAD_RULE opencode rm *: rm is not in provides" ] || false
   write_conf; edit_conf 's/^requires=.*/requires=git rm/'
   printf '%s\n' 'allow.claude=Bash(rm -rf /)' >> "$ORIGIN/arness-plugin.conf"
   run "$SCRIPT" check "$ORIGIN"
-  [ "$status" -eq 4 ] && [ "$output" = "BAD_RULE claude Bash(rm -rf /): rm is not in provides" ]
+  [ "$status" -eq 4 ] && [ "$output" = "BAD_RULE claude Bash(rm -rf /): rm is not in provides" ] || false
 }
 
 @test "the example manifest in plugins/README.md passes check" {
@@ -376,14 +376,14 @@ check_with() {
   printf -- '---\nname: hello\n---\n' > "$ORIGIN/skills/hello/SKILL.md"
   write_conf; edit_conf 's/^skills=.*/skills=hello/'
   run "$SCRIPT" check "$ORIGIN"
-  [ "$status" -eq 4 ] && [ "$output" = "BAD_MANIFEST skills: hello lacks prefix demo-" ]
+  [ "$status" -eq 4 ] && [ "$output" = "BAD_MANIFEST skills: hello lacks prefix demo-" ] || false
   write_conf
   printf -- '---\nname: other\n---\n' > "$ORIGIN/skills/demo-hello/SKILL.md"
   run "$SCRIPT" check "$ORIGIN"
-  [ "$status" -eq 4 ] && [ "$output" = "INVALID skills/demo-hello/SKILL.md lacks 'name: demo-hello'" ]
+  [ "$status" -eq 4 ] && [ "$output" = "INVALID skills/demo-hello/SKILL.md lacks 'name: demo-hello'" ] || false
   rm "$ORIGIN/skills/demo-hello/SKILL.md"
   run "$SCRIPT" check "$ORIGIN"
-  [ "$status" -eq 4 ] && [ "$output" = "INVALID skills/demo-hello/SKILL.md not found" ]
+  [ "$status" -eq 4 ] && [ "$output" = "INVALID skills/demo-hello/SKILL.md not found" ] || false
 }
 
 @test "check rejects an agent whose frontmatter name differs" {
@@ -396,11 +396,11 @@ check_with() {
 @test "check rejects names with glob or path characters, and bad version, name or prefix" {
   write_conf; edit_conf 's/^skills=.*/skills=..\/x */'
   run "$SCRIPT" check "$ORIGIN"
-  [ "$status" -eq 4 ] && [ "$output" = "BAD_MANIFEST skills: names must be lowercase slugs" ]
+  [ "$status" -eq 4 ] && [ "$output" = "BAD_MANIFEST skills: names must be lowercase slugs" ] || false
   for line in 's/^version=.*/version=1.0/' 's/^name=.*/name=Demo/' 's/^prefix=.*/prefix=demo/'; do
     write_conf; edit_conf "$line"
     run "$SCRIPT" check "$ORIGIN"
-    [ "$status" -eq 4 ] && [[ "$output" == "BAD_MANIFEST "* ]]
+    [ "$status" -eq 4 ] && [[ "$output" == "BAD_MANIFEST "* ]] || false
   done
 }
 
@@ -424,15 +424,15 @@ check_with() {
   run "$SCRIPT" update demo
   [ "$status" -eq 20 ]
   [ "$(last_line)" = "CONFIRM_UPDATE demo $old $new main" ]
-  [[ "$output" == *"NEW_ALLOW claude Bash(demo-tool run *)"* ]]
-  [[ "$output" != *"NEW_ALLOW claude Bash(demo-tool *)"* ]]
+  [[ "$output" == *"NEW_ALLOW claude Bash(demo-tool run *)"* ]] || false
+  [[ "$output" != *"NEW_ALLOW claude Bash(demo-tool *)"* ]] || false
   [ -L "$SANDBOX/agents/demo-helper.md" ]
   run "$SCRIPT" apply update --commit "$new" --ref main demo
   [ "$status" -eq 0 ]
   [ "$(last_line)" = "UPDATED demo $old $new" ]
-  [ ! -e "$SANDBOX/agents/demo-helper.md" ] && [ ! -L "$SANDBOX/agents/demo-helper.md" ]
+  [ ! -e "$SANDBOX/agents/demo-helper.md" ] && [ ! -L "$SANDBOX/agents/demo-helper.md" ] || false
   [ -L "$SANDBOX/skills/demo-hello" ]
-  state | grep -qx 'version=0.2.0' && state | grep -qx "commit=$new"
+  state | grep -qx 'version=0.2.0' && state | grep -qx "commit=$new" || false
 }
 
 @test "apply update refuses to run without --commit" {
@@ -467,10 +467,10 @@ check_with() {
   target="$(git -C "$ORIGIN" rev-parse v0.10.0)"
   run "$SCRIPT" update demo
   [ "$status" -eq 20 ]
-  [[ "$(last_line)" == "CONFIRM_UPDATE demo "*" $target v0.10.0" ]]
+  [[ "$(last_line)" == "CONFIRM_UPDATE demo "*" $target v0.10.0" ]] || false
   run "$SCRIPT" apply update --commit "$target" --ref v0.10.0 demo
   [ "$status" -eq 0 ]
-  state | grep -qx 'ref=v0.10.0' && state | grep -qx 'kind=tag' && state | grep -qx 'version=0.10.0'
+  state | grep -qx 'ref=v0.10.0' && state | grep -qx 'kind=tag' && state | grep -qx 'version=0.10.0' || false
 }
 
 @test "apply update never creates or resets a local branch" {
@@ -483,7 +483,7 @@ check_with() {
   run "$SCRIPT" apply update --commit "$(origin_head)" --ref main demo
   [ "$status" -eq 0 ]
   [ "$(git -C "$SANDBOX/plugins/demo" rev-parse keep)" = "$side" ]
-  ! git -C "$SANDBOX/plugins/demo" symbolic-ref -q HEAD
+  ! git -C "$SANDBOX/plugins/demo" symbolic-ref -q HEAD || false
 }
 
 @test "update refuses a clone with local changes" {
@@ -511,12 +511,12 @@ check_with() {
   git -C "$SANDBOX/plugins/demo" checkout -q --detach origin/main
   run bash "$SANDBOX/setup.sh" --provider claude
   [ "$status" -eq 0 ]
-  ! grep -qF 'bypassPermissions' "$SANDBOX/.claude/settings.json"
-  ! grep -qF 'Bash(*)' "$SANDBOX/.claude/settings.json"
+  ! grep -qF 'bypassPermissions' "$SANDBOX/.claude/settings.json" || false
+  ! grep -qF 'Bash(*)' "$SANDBOX/.claude/settings.json" || false
   grep -qF '"Skill(demo-hello)",' "$SANDBOX/.claude/settings.json"
   json_looks_valid "$SANDBOX/.claude/settings.json"
   run "$SCRIPT" list
-  [[ "$output" == *" MODIFIED "* ]]
+  [[ "$output" == *" MODIFIED "* ]] || false
   run "$SCRIPT" update demo
   [ "$status" -eq 11 ]
   [ "$(last_line)" = "DIRTY $SANDBOX/plugins/demo moved" ]
@@ -546,13 +546,13 @@ check_with() {
   run "$SCRIPT" remove demo
   [ "$status" -eq 20 ]
   [ "$(last_line)" = "CONFIRM_REMOVE demo" ]
-  [[ "$output" == *"UNINSTALL $UNINSTALL_CMD"* ]]
+  [[ "$output" == *"UNINSTALL $UNINSTALL_CMD"* ]] || false
   [ -d "$SANDBOX/plugins/demo" ]
   run "$SCRIPT" apply remove demo
   [ "$status" -eq 0 ]
   [ "$(last_line)" = "REMOVED demo" ]
   [ -f "$BATS_TEST_TMPDIR/uninstalled.flag" ]
-  [ ! -e "$SANDBOX/plugins/demo" ] && [ ! -e "$SANDBOX/plugins/.demo.state" ]
+  [ ! -e "$SANDBOX/plugins/demo" ] && [ ! -e "$SANDBOX/plugins/.demo.state" ] || false
   [ -z "$(ls -A "$SANDBOX/skills" | grep -v plugin-manage || true)" ]
   [ -z "$(ls -A "$SANDBOX/agents")" ]
   [ "$(cat "$SANDBOX/.claude/settings.json")" = "$before" ]
@@ -566,7 +566,7 @@ check_with() {
   [ "$status" -eq 11 ]
   run "$SCRIPT" apply remove --force demo
   [ "$status" -eq 0 ]
-  [ -f "$BATS_TEST_TMPDIR/uninstalled.flag" ] && [ ! -e "$BATS_TEST_TMPDIR/evil.flag" ]
+  [ -f "$BATS_TEST_TMPDIR/uninstalled.flag" ] && [ ! -e "$BATS_TEST_TMPDIR/evil.flag" ] || false
   [ ! -e "$SANDBOX/plugins/demo" ]
 }
 
@@ -618,8 +618,8 @@ check_with() {
   ln -s "$BATS_TEST_TMPDIR/gone" "$SANDBOX/agents/demo-helper.md"
   run "$SCRIPT" sync
   [ "$status" -eq 0 ]
-  [[ "$output" == *"SYNCED demo"* ]]
-  [[ "$output" == *"warning: agents/demo-helper.md exists, not linked"* ]]
+  [[ "$output" == *"SYNCED demo"* ]] || false
+  [[ "$output" == *"warning: agents/demo-helper.md exists, not linked"* ]] || false
   [ -L "$SANDBOX/skills/demo-hello" ]
   [ "$(readlink "$SANDBOX/agents/demo-helper.md")" = "$BATS_TEST_TMPDIR/gone" ]
 }
@@ -629,7 +629,7 @@ check_with() {
   rm "$SANDBOX/skills/demo-hello"
   run bash "$SANDBOX/setup.sh" --provider claude
   [ "$status" -eq 0 ]
-  [[ "$output" == *"==> plugins"* ]]
+  [[ "$output" == *"==> plugins"* ]] || false
   [ -L "$SANDBOX/skills/demo-hello" ]
   grep -qF '"Skill(demo-hello)",' "$SANDBOX/.claude/settings.json"
 }
@@ -655,5 +655,5 @@ check_with() {
   [ "$status" -eq 2 ]
   run "$SCRIPT" --help
   [ "$status" -eq 0 ]
-  [[ "$output" == *"Usage: plugin-manage.sh add"* ]]
+  [[ "$output" == *"Usage: plugin-manage.sh add"* ]] || false
 }
